@@ -433,6 +433,13 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
     await ctx.context.runInBackgroundOrAwait(Promise.resolve().then(() => handler(event)));
   }
 
+  /**
+   * Requests that answered a `stepUp` path. An endpoint dispatched inside the same
+   * request (the OAuth provider's consent re-enters `/oauth2/authorize` this way) is not
+   * challenged again: the answer was spent on the outer one, so it could never pass.
+   */
+  const answeredRequests = new WeakSet<Request>();
+
   const storeFor = (context: AuthContext): DbscStore =>
     config.store?.(context) ??
     createAdapterDbscStore(context.adapter as unknown as DbscStoreAdapter);
@@ -698,7 +705,11 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
             cause?: unknown,
           ) => {
             await emit(ctx, { type: "registration_refused", ...ids(found.session), reason });
-            return APIError.from("BAD_REQUEST", error, { cause });
+            // Set directly: Better Auth releases before `APIError.from` took a cause ignore
+            // the third argument, and `peerDependencies` admits them.
+            const refusal = APIError.from("BAD_REQUEST", error);
+            if (cause !== undefined) refusal.cause = cause;
+            return refusal;
           };
           if (!jti || !challenge) {
             throw await refused("invalid_challenge", DBSC_ERROR_CODES.DBSC_INVALID_CHALLENGE);
@@ -961,11 +972,22 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
             if (policy && state.kind === "plain")
               await unboundPolicy(ctx, state, ctx.path!, policy);
             if (policy && state.kind === "bound") {
-              if ((await freshProof(ctx, state, ctx.path!)) === "challenge") {
-                // `APIError.from` takes no headers, and the step-up cookies must reach the browser.
-                const { code, message } = DBSC_ERROR_CODES.DBSC_FRESH_PROOF_REQUIRED;
-                throw new APIError("FORBIDDEN", { code, message }, ctx.responseHeaders);
+              if (ctx.request && answeredRequests.has(ctx.request)) return;
+              if ((await freshProof(ctx, state, ctx.path!)) === "answered") {
+                if (ctx.request) answeredRequests.add(ctx.request);
+                return;
               }
+              if (ctx.request && ctx.headers?.get("sec-fetch-mode") === "navigate") {
+                // A navigation shows whatever comes back, so a JSON 403 would strand the
+                // user. Sent back to itself, the browser holds it, refreshes with its key,
+                // and follows it. 307 keeps a form post's method and body.
+                const url = new URL(ctx.request.url);
+                ctx.responseHeaders?.set("location", `${url.pathname}${url.search}`);
+                throw new APIError("TEMPORARY_REDIRECT", undefined, ctx.responseHeaders);
+              }
+              // `APIError.from` takes no headers, and the step-up cookies must reach the browser.
+              const { code, message } = DBSC_ERROR_CODES.DBSC_FRESH_PROOF_REQUIRED;
+              throw new APIError("FORBIDDEN", { code, message }, ctx.responseHeaders);
             }
           }),
         },
