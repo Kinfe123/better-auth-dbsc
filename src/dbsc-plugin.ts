@@ -217,6 +217,8 @@ export interface DbscOptions {
    * session token the request did not carry; session refreshes never re-register.
    */
   shouldRegister?: (ctx: HookContext) => Awaitable<boolean>;
+  /** The clock, in milliseconds. For tests. */
+  now?: () => number;
   /**
    * Where bindings live. Defaults to a `dbscSession` table through Better Auth's adapter.
    * Pass a store, or a function that builds one from Better Auth's context.
@@ -266,6 +268,7 @@ export interface ResolvedDbscOptions {
   rateLimit: { enabled: boolean; window: number; max: number };
   onEvent: DbscOptions["onEvent"];
   shouldRegister: DbscOptions["shouldRegister"];
+  now: () => number;
   store: ((context: AuthContext) => DbscStore) | undefined;
   advanced: {
     sessionIdentifier: string;
@@ -335,7 +338,7 @@ export function resolveDbscOptions(options: DbscOptions = {}): ResolvedDbscOptio
   };
   positiveInteger(rateLimit.window, "rateLimit.window");
   positiveInteger(rateLimit.max, "rateLimit.max");
-  for (const key of ["onEvent", "shouldRegister"] as const) {
+  for (const key of ["onEvent", "shouldRegister", "now"] as const) {
     if (options[key] !== undefined && typeof options[key] !== "function") {
       issues.push(`\`${key}\` must be a function.`);
     }
@@ -369,6 +372,7 @@ export function resolveDbscOptions(options: DbscOptions = {}): ResolvedDbscOptio
     rateLimit,
     onEvent: options.onEvent,
     shouldRegister: options.shouldRegister,
+    now: options.now ?? Date.now,
     store: store === undefined ? undefined : typeof store === "function" ? store : () => store,
     advanced: {
       sessionIdentifier,
@@ -469,7 +473,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
     const token = cookieToken ?? readBearerToken(ctx.headers);
     if (!token) return { kind: "none" };
     const found = await ctx.context.internalAdapter.findSession(token);
-    if (!found || new Date(found.session.expiresAt).getTime() <= Date.now())
+    if (!found || new Date(found.session.expiresAt).getTime() <= config.now())
       return { kind: "none" };
     const binding = await storeFor(ctx.context).find(found.session.id);
     if (!binding) return { kind: "plain", token, session: found.session };
@@ -477,7 +481,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
       secret: ctx.context.secret,
       sessionToken: token,
       token: ctx.getCookie(cookies(ctx).bound.name),
-      nowMs: Date.now(),
+      nowMs: config.now(),
     });
     if (!bound)
       return { kind: "unproven", via: cookieToken ? "cookie" : "bearer", session: found.session };
@@ -506,7 +510,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
       sessionToken: state.token,
       action,
       token: ctx.getCookie(freshProof.name),
-      nowMs: Date.now(),
+      nowMs: config.now(),
       ttlSeconds: config.freshProof.expiresIn,
     });
     if (
@@ -522,7 +526,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
       secret: ctx.context.secret,
       sessionToken: state.token,
       action,
-      nowMs: Date.now(),
+      nowMs: config.now(),
     });
     ctx.setCookie(bound.name, "", { ...bound.attributes, maxAge: 0 });
     ctx.setCookie(freshProof.name, next, freshProof.attributes);
@@ -542,7 +546,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
       const freshAge = ctx.context.sessionConfig.freshAge;
       if (
         freshAge === 0 ||
-        Date.now() - new Date(state.session.createdAt).getTime() < freshAge * 1000
+        config.now() - new Date(state.session.createdAt).getTime() < freshAge * 1000
       )
         return;
     }
@@ -571,7 +575,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
     const value = await createBoundToken({
       secret: ctx.context.secret,
       sessionToken,
-      expiresAtMs: Date.now() + config.boundCookieMaxAge * 1000,
+      expiresAtMs: config.now() + config.boundCookieMaxAge * 1000,
       issuedAtMs,
     });
     // The value is a MAC over the session token already, so a plain cookie is enough.
@@ -583,7 +587,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
       secret: ctx.context.secret,
       purpose: "refresh",
       sessionToken,
-      nowMs: Date.now(),
+      nowMs: config.now(),
     });
     const value = formatChallengeHeader({
       challenge,
@@ -709,7 +713,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
           if (!proof) throw APIError.from("BAD_REQUEST", DBSC_ERROR_CODES.DBSC_PROOF_REQUIRED);
           const token = await readSessionToken(ctx);
           const found = token ? await ctx.context.internalAdapter.findSession(token) : null;
-          if (!token || !found || new Date(found.session.expiresAt).getTime() <= Date.now()) {
+          if (!token || !found || new Date(found.session.expiresAt).getTime() <= config.now()) {
             throw APIError.from("UNAUTHORIZED", DBSC_ERROR_CODES.DBSC_SESSION_REQUIRED);
           }
 
@@ -719,7 +723,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
             purpose: "register",
             sessionToken: token,
             challenge: jti,
-            nowMs: Date.now(),
+            nowMs: config.now(),
             ttlSeconds: config.challengeExpiresIn,
           });
           const refused = async (
@@ -820,7 +824,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
 
           const token = await readSessionToken(ctx);
           const found = token ? await ctx.context.internalAdapter.findSession(token) : null;
-          if (!token || !found || new Date(found.session.expiresAt).getTime() <= Date.now()) {
+          if (!token || !found || new Date(found.session.expiresAt).getTime() <= config.now()) {
             return terminate(ctx, "no_session");
           }
           const store = storeFor(ctx.context);
@@ -840,7 +844,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
             purpose: "refresh",
             sessionToken: token,
             challenge: jti,
-            nowMs: Date.now(),
+            nowMs: config.now(),
             ttlSeconds: config.challengeExpiresIn,
           });
           if (!jti || !challenge) return askAgain("stale_challenge");
@@ -864,7 +868,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
             return askAgain("replayed");
 
           await emit(ctx, { type: "refreshed", ...ids(found.session) });
-          await setBoundCookie(ctx, token, Date.now());
+          await setBoundCookie(ctx, token, config.now());
           await setRefreshChallenge(ctx, token);
           return ctx.json(sessionConfig(ctx));
         },
@@ -1038,7 +1042,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
               secret: ctx.context.secret,
               purpose: "register",
               sessionToken: issued.session.token,
-              nowMs: Date.now(),
+              nowMs: config.now(),
             });
             const value = formatRegistrationHeader({
               algorithms: config.algorithms,

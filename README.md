@@ -111,6 +111,7 @@ dbsc({
   rateLimit: { enabled: true, window: 60, max: 600 },
   onEvent: undefined, // (event) => void
   shouldRegister: undefined, // (ctx) => boolean
+  now: Date.now, // the clock, for tests
   store: undefined, // the dbscSession table through Better Auth's adapter
   schema: undefined, // rename the model or its fields
   advanced: {
@@ -145,6 +146,7 @@ BetterAuthError: Invalid dbsc() options:
 | `rateLimit` | Per-address limit on `/dbsc/register` and `/dbsc/refresh`, through Better Auth's own limiter, which is on in production by default. Set it generously, because an office shares one address. |
 | `onEvent` | Receives registrations, refreshes, refusals, and theft signals. See [Events](#events). |
 | `shouldRegister` | Decides per sign-in whether to offer DBSC, for example only for some users. It runs only when a response issues a session token the request didn't carry. Return `false` to skip. |
+| `now` | The clock in milliseconds, for tests. |
 | `store` | A `DbscStore`, or `(ctx) => DbscStore`, to keep bindings outside the default table. See [Store](#store). |
 | `schema` | Renames the `dbscSession` model or its fields. |
 | `advanced.sessionIdentifier` | The browser keys DBSC sessions by site and this value. One value per app means a new sign-in replaces the old DBSC session instead of adding another. Give apps that share a site different values. |
