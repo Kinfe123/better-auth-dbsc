@@ -222,6 +222,24 @@ describe("registration", () => {
     expect((await response.json()).code).toBe("DBSC_INVALID_PROOF");
   });
 
+  it("keeps the proof's error as the cause on every supported Better Auth", async () => {
+    const { auth } = await createTestAuth();
+    const browser = new Browser(auth);
+    const device = await Device.create();
+    const signUp = await browser.signUp();
+    const proof = await device.registrationProof(
+      challengeFrom(signUp.headers.get("secure-session-registration")),
+      { aud: "https://evil.example/api/auth/dbsc/register" },
+    );
+    const refusal = await auth.api
+      .registerDbscSession({
+        headers: new Headers({ cookie: browser.cookieHeader, "secure-session-response": proof }),
+      })
+      .catch((error: unknown) => error);
+    expect(refusal).toMatchObject({ body: { code: "DBSC_INVALID_PROOF" } });
+    expect((refusal as Error).cause).toMatchObject({ code: "AUDIENCE_MISMATCH" });
+  });
+
   it("needs a signed-in session", async () => {
     const { auth } = await createTestAuth();
     const device = await Device.create();

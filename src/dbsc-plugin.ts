@@ -705,7 +705,11 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
             cause?: unknown,
           ) => {
             await emit(ctx, { type: "registration_refused", ...ids(found.session), reason });
-            return APIError.from("BAD_REQUEST", error, { cause });
+            // Set directly: Better Auth releases before `APIError.from` took a cause ignore
+            // the third argument, and `peerDependencies` admits them.
+            const refusal = APIError.from("BAD_REQUEST", error);
+            if (cause !== undefined) refusal.cause = cause;
+            return refusal;
           };
           if (!jti || !challenge) {
             throw await refused("invalid_challenge", DBSC_ERROR_CODES.DBSC_INVALID_CHALLENGE);
