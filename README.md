@@ -1,4 +1,4 @@
-# better-auth-dbsc
+# bt-auth-dbsc
 
 **Device Bound Session Credentials for Better Auth: a stolen session cookie stops working on any other machine.**
 
@@ -6,9 +6,13 @@ When a browser with DBSC support signs in, it creates a key in the TPM. Today th
 
 Browsers without DBSC ignore the registration header and keep using the normal Better Auth session. Nothing changes for them.
 
+```sh
+pnpm add bt-auth-dbsc
+```
+
 ```ts
 import { betterAuth } from "better-auth";
-import { dbsc } from "better-auth-dbsc";
+import { dbsc } from "bt-auth-dbsc";
 
 export const auth = betterAuth({
   database,
@@ -293,7 +297,7 @@ The browser drives DBSC by itself, so the client needs no code. The client plugi
 
 ```ts
 import { createAuthClient } from "better-auth/react";
-import { dbscClient } from "better-auth-dbsc/client";
+import { dbscClient } from "bt-auth-dbsc/client";
 
 export const authClient = createAuthClient({ plugins: [dbscClient()] });
 const { data } = await authClient.dbsc.getStatus(); // { state: "bound" | ... }
@@ -301,7 +305,7 @@ const { data } = await authClient.dbsc.getStatus(); // { state: "bound" | ... }
 
 ## Building blocks
 
-`better-auth-dbsc/core` exports the protocol pieces without Better Auth, for another framework or your own middleware:
+`bt-auth-dbsc/core` exports the protocol pieces without Better Auth, for another framework or your own middleware:
 
 ```ts
 import {
@@ -313,7 +317,7 @@ import {
   readDbscChallenge,
   createBoundToken,
   readBoundToken,
-} from "better-auth-dbsc/core";
+} from "bt-auth-dbsc/core";
 
 const { publicKey, thumbprint } = await verifyRegistrationProof(jwt, {
   challenge,
@@ -332,6 +336,16 @@ pnpm install
 pnpm test        # registration, refresh, replay races, enforcement, stepUp, events, threat model
 pnpm example     # http://localhost:3000: a sign-up form and a protected /me route
 ```
+
+CI runs lint, format, typecheck, tests, the build and a check of the packed tarball on Node 22 and 24, plus the tests against Better Auth 1.7.0, the oldest release `peerDependencies` admits.
+
+## Releasing
+
+```sh
+pnpm release     # bumpp: commits "chore: release vX.Y.Z", tags vX.Y.Z, pushes
+```
+
+The tag runs the release workflow, which checks the tag against `package.json`, runs every check again, publishes to npm with provenance through trusted publishing (no npm token), and creates the GitHub release. A prerelease such as `0.2.0-beta.1` publishes under the `next` dist-tag.
 
 ## Limits
 

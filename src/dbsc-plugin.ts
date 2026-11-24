@@ -379,7 +379,7 @@ export type DbscStatusState = "off" | "no-session" | "unbound" | "bound";
 const freshProofBody = {
   "~standard": {
     version: 1,
-    vendor: "better-auth-dbsc",
+    vendor: "bt-auth-dbsc",
     validate(value: unknown) {
       const action = (value as { action?: unknown } | null | undefined)?.action;
       return typeof action === "string" && action.length > 0
