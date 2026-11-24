@@ -6,5 +6,5 @@ export default defineConfig({
   dts: true,
   platform: "neutral",
   tsconfig: "tsconfig.build.json",
-  external: ["better-auth", "jose"],
+  deps: { neverBundle: ["better-auth", "jose"] },
 });
