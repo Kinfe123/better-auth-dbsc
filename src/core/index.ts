@@ -40,17 +40,17 @@ export type {
 export {
   createBoundToken,
   createDbscChallenge,
-  createStepUpToken,
+  createFreshProofToken,
   readBoundToken,
   readDbscChallenge,
-  readStepUpToken,
+  readFreshProofToken,
 } from "./token.ts";
 export type {
   CreateBoundTokenInput,
   CreateDbscChallengeInput,
-  CreateStepUpTokenInput,
+  CreateFreshProofTokenInput,
   DbscChallengePurpose,
   ReadBoundTokenInput,
   ReadDbscChallengeInput,
-  ReadStepUpTokenInput,
+  ReadFreshProofTokenInput,
 } from "./token.ts";

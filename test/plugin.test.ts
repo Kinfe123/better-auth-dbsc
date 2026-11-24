@@ -2,7 +2,13 @@ import { bearer, openAPI } from "better-auth/plugins";
 import { describe, expect, it } from "vitest";
 import packageJson from "../package.json" with { type: "json" };
 import { dbscClient } from "../src/client.ts";
-import { createMemoryDbscStore, dbsc, DBSC_ERROR_CODES, resolveDbscOptions } from "../src/index.ts";
+import {
+  createMemoryDbscStore,
+  dbsc,
+  DBSC_ERROR_CODES,
+  resolveDbscOptions,
+  type DbscOptions,
+} from "../src/index.ts";
 import {
   BOUND_COOKIE,
   Browser,
@@ -12,7 +18,7 @@ import {
   ORIGIN,
   refreshLikeChrome,
   signUpAndBind,
-  STEP_UP_COOKIE,
+  FRESH_PROOF_COOKIE,
 } from "./helpers.ts";
 
 const CHALLENGE = /^\d+\.[\w-]{22}\.[\w-]{43}$/;
@@ -244,13 +250,23 @@ describe("registration", () => {
     expect(register.status).toBe(200);
   });
 
-  it("honors shouldRegister and the header names", async () => {
-    const off = await createTestAuth({ shouldRegister: () => false });
+  it("lets beforeRegistration skip a session, and honors the header names", async () => {
+    const seen: string[] = [];
+    const off = await createTestAuth({
+      dbscHooks: {
+        beforeRegistration: ({ user, session }) => {
+          seen.push(`${user.email}:${session.userId === user.id}`);
+          return false;
+        },
+      },
+    });
+    const email = "skip@example.com";
     expect(
-      (await new Browser(off.auth).signUp()).headers.get("secure-session-registration"),
+      (await new Browser(off.auth).signUp(email)).headers.get("secure-session-registration"),
     ).toBeNull();
+    expect(seen).toEqual([`${email}:true`]);
 
-    const standard = await createTestAuth({ headers: "standard" });
+    const standard = await createTestAuth({ advanced: { headers: "standard" } });
     const response = await new Browser(standard.auth).signUp();
     expect(response.headers.get("secure-session-registration")).not.toBeNull();
     expect(response.headers.get("sec-session-registration")).toBeNull();
@@ -437,13 +453,13 @@ describe("enforcement", () => {
     expect(await browser.status()).toBe("unbound");
   });
 
-  it("observes without refusing when enforce is false, and honors exclude", async () => {
-    const observe = await createTestAuth({ enforce: false });
+  it("observes without refusing when enforcement is off, and honors exclude", async () => {
+    const observe = await createTestAuth({ enforcement: { enabled: false } });
     const a = await signUpAndBind(observe.auth);
     a.browser.cookies.delete(BOUND_COOKIE);
     expect(await a.browser.getSession()).not.toBeNull();
 
-    const excluded = await createTestAuth({ enforce: { exclude: ["/list-sessions"] } });
+    const excluded = await createTestAuth({ enforcement: { exclude: ["/list-sessions"] } });
     const b = await signUpAndBind(excluded.auth);
     b.browser.cookies.delete(BOUND_COOKIE);
     expect((await b.browser.fetch("/list-sessions")).status).toBe(200);
@@ -525,9 +541,9 @@ describe("store", () => {
   });
 });
 
-describe("stepUp", () => {
+describe("freshProof", () => {
   it("makes a bound session prove itself again before a sensitive action", async () => {
-    const { auth, clock } = await createTestAuth({ stepUp: { paths: ["/update-user"] } });
+    const { auth, clock } = await createTestAuth({ freshProof: { paths: ["/update-user"] } });
     const { browser, device } = await signUpAndBind(auth);
     clock.advance(1);
 
@@ -535,8 +551,8 @@ describe("stepUp", () => {
     expect(first.status).toBe(403);
     expect((await first.json()).code).toBe("DBSC_FRESH_PROOF_REQUIRED");
     expect(browser.cookies.has(BOUND_COOKIE)).toBe(false);
-    const stepUp = browser.cookies.get(STEP_UP_COOKIE);
-    expect(stepUp).toBeTypeOf("string");
+    const freshProof = browser.cookies.get(FRESH_PROOF_COOKIE);
+    expect(freshProof).toBeTypeOf("string");
 
     // Chrome sees the bound cookie gone, refreshes with its key, then retries.
     clock.advance(1);
@@ -544,12 +560,12 @@ describe("stepUp", () => {
     expect((await browser.post("/update-user", { name: "New Name" })).status).toBe(200);
 
     // The answered challenge is spent, even if a copy of it is sent again.
-    browser.cookies.set(STEP_UP_COOKIE, stepUp!);
+    browser.cookies.set(FRESH_PROOF_COOKIE, freshProof!);
     expect((await browser.post("/update-user", { name: "Again" })).status).toBe(403);
   });
 
   it("is not answered by a bound cookie from before the challenge", async () => {
-    const { auth, clock } = await createTestAuth({ stepUp: { paths: ["/update-user"] } });
+    const { auth, clock } = await createTestAuth({ freshProof: { paths: ["/update-user"] } });
     const { browser } = await signUpAndBind(auth);
     const copiedBound = browser.cookies.get(BOUND_COOKIE)!;
     clock.advance(1);
@@ -560,7 +576,7 @@ describe("stepUp", () => {
   });
 
   it("lets plain sessions through", async () => {
-    const { auth } = await createTestAuth({ stepUp: { paths: ["/update-user"] } });
+    const { auth } = await createTestAuth({ freshProof: { paths: ["/update-user"] } });
     const browser = new Browser(auth);
     await browser.signUp();
     expect((await browser.post("/update-user", { name: "x" })).status).toBe(200);
@@ -584,10 +600,13 @@ describe("stepUp", () => {
     clock.advance(1);
     const challenged = await call(browser.cookieHeader);
     expect(challenged.response.state).toBe("challenge");
-    const stepUp = challenged.headers
+    const freshProof = challenged.headers
       .getSetCookie()
-      .find((line) => line.startsWith(`${STEP_UP_COOKIE}=`))!;
-    browser.cookies.set(STEP_UP_COOKIE, stepUp.split(";")[0]!.slice(STEP_UP_COOKIE.length + 1));
+      .find((line) => line.startsWith(`${FRESH_PROOF_COOKIE}=`))!;
+    browser.cookies.set(
+      FRESH_PROOF_COOKIE,
+      freshProof.split(";")[0]!.slice(FRESH_PROOF_COOKIE.length + 1),
+    );
 
     clock.advance(1);
     await refreshLikeChrome(browser, device);
@@ -601,10 +620,10 @@ describe("stepUp", () => {
   });
 });
 
-describe("stepUp unbound policies", () => {
+describe("freshProof unbound policies", () => {
   it("denies plain sessions on paths that need a device-bound session", async () => {
     const { auth, clock } = await createTestAuth({
-      stepUp: { paths: { "/update-user": { unbound: "deny" }, "/change-email": {} } },
+      freshProof: { paths: { "/update-user": { unbound: "deny" }, "/change-email": {} } },
     });
     const plain = new Browser(auth);
     await plain.signUp();
@@ -623,7 +642,7 @@ describe("stepUp unbound policies", () => {
 
   it("asks plain sessions to be recent under fresh-session", async () => {
     const { auth, clock } = await createTestAuth(
-      { stepUp: { paths: ["/update-user"], unbound: "fresh-session" } },
+      { freshProof: { paths: ["/update-user"], unbound: "fresh-session" } },
       { session: { freshAge: 60 } },
     );
     const plain = new Browser(auth);
@@ -636,10 +655,20 @@ describe("stepUp unbound policies", () => {
   });
 });
 
-describe("onEvent", () => {
+describe("dbscHooks", () => {
   it("reports the lifecycle and theft signals without key material", async () => {
     const events: Record<string, unknown>[] = [];
-    const { auth } = await createTestAuth({ onEvent: (event) => void events.push(event) });
+    const record = (hook: string) => (data: object) => void events.push({ hook, ...data });
+    const { auth } = await createTestAuth({
+      dbscHooks: {
+        afterRegistration: record("afterRegistration"),
+        onRefreshChallenged: record("onRefreshChallenged"),
+        onProofRejected: record("onProofRejected"),
+        afterRefresh: record("afterRefresh"),
+        onCredentialMissing: record("onCredentialMissing"),
+        onTerminate: record("onTerminate"),
+      },
+    });
     const { browser, device, register, registration } = await signUpAndBind(auth);
     const session = await browser.getSession();
     const ids = { sessionId: session?.session.id, userId: session?.user.id };
@@ -653,12 +682,12 @@ describe("onEvent", () => {
     await browser.refresh(undefined, '"another-app"');
 
     expect(events).toEqual([
-      { type: "registered", ...ids },
-      { type: "refresh_challenged", ...ids, reason: "missing_proof" },
-      { type: "proof_rejected", ...ids, reason: "INVALID_SIGNATURE" },
-      { type: "refreshed", ...ids },
-      { type: "credential_missing", ...ids, via: "cookie" },
-      { type: "terminated", reason: "other_identifier" },
+      { hook: "afterRegistration", ...ids },
+      { hook: "onRefreshChallenged", ...ids, reason: "missing_proof" },
+      { hook: "onProofRejected", ...ids, reason: "INVALID_SIGNATURE" },
+      { hook: "afterRefresh", ...ids },
+      { hook: "onCredentialMissing", ...ids, via: "cookie" },
+      { hook: "onTerminate", reason: "other_identifier" },
     ]);
     const serialized = JSON.stringify(events);
     const sessionToken = decodeURIComponent(
@@ -669,10 +698,12 @@ describe("onEvent", () => {
     }
   });
 
-  it("never changes a response when the handler throws", async () => {
+  it("never changes a response when a hook throws", async () => {
     const { auth } = await createTestAuth({
-      onEvent: () => {
-        throw new Error("telemetry is down");
+      dbscHooks: {
+        afterRegistration: () => {
+          throw new Error("telemetry is down");
+        },
       },
     });
     const { register } = await signUpAndBind(auth);
@@ -719,6 +750,17 @@ describe("rateLimit", () => {
     for (let i = 0; i < 3; i++) statuses.push((await browser.refresh()).status);
     expect(statuses).toContain(429);
   });
+
+  it("leaves register and refresh unlimited when turned off", async () => {
+    const { auth } = await createTestAuth(
+      { rateLimit: { enabled: false, max: 2 } },
+      { rateLimit: { enabled: true, storage: "memory" } },
+    );
+    const { browser } = await signUpAndBind(auth);
+    const statuses = [];
+    for (let i = 0; i < 3; i++) statuses.push((await browser.refresh()).status);
+    expect(statuses).toEqual([403, 403, 403]);
+  });
 });
 
 describe("options", () => {
@@ -728,24 +770,27 @@ describe("options", () => {
         algorithms: [],
         boundCookieMaxAge: 0,
         challengeExpiresIn: 1.5,
-        sessionIdentifier: "",
         scope: { origin: "https://example.com/path", exclude: ["static"] },
-        enforce: { exclude: ["admin"] },
-        stepUp: { paths: ["change-email"], expiresIn: -1 },
-        rateLimit: { window: 0, max: 10 },
+        enforcement: { exclude: ["admin"] },
+        freshProof: { paths: ["change-email"], expiresIn: -1 },
+        rateLimit: { window: 0 },
+        // An option from an earlier version, to show the message it gets.
+        dbscHooks: { onEvent: () => {} } as DbscOptions["dbscHooks"],
+        advanced: { sessionIdentifier: "" },
       }),
     ).toThrowErrorMatchingInlineSnapshot(`
       [BetterAuthError: Invalid dbsc() options:
         - \`algorithms\` must be a non-empty list of "ES256" and/or "RS256".
-        - \`sessionIdentifier\` must be non-empty printable ASCII.
         - \`boundCookieMaxAge\` must be a positive integer.
         - \`challengeExpiresIn\` must be a positive integer.
         - \`scope.origin\` must be an origin such as \`https://app.example.com\`, with no path.
         - \`scope.exclude\` entries must be paths starting with \`/\`, such as \`/admin/\`.
-        - \`enforce.exclude\` entries must be paths starting with \`/\`, such as \`/admin/\`.
-        - \`stepUp.paths\` entries must be paths starting with \`/\`, such as \`/admin/\`.
-        - \`stepUp.expiresIn\` must be a positive integer.
-        - \`rateLimit.window\` must be a positive integer.]
+        - \`enforcement.exclude\` entries must be paths starting with \`/\`, such as \`/admin/\`.
+        - \`freshProof.paths\` entries must be paths starting with \`/\`, such as \`/admin/\`.
+        - \`freshProof.expiresIn\` must be a positive integer.
+        - \`rateLimit.window\` must be a positive integer.
+        - \`dbscHooks.onEvent\` is not a hook. Hooks: beforeRegistration, afterRegistration, onRegistrationRefused, afterRefresh, onRefreshChallenged, onProofRejected, onCredentialMissing, onFreshProofChallenged, afterFreshProof, onUnboundRefused, onTerminate.
+        - \`advanced.sessionIdentifier\` must be non-empty printable ASCII.]
     `);
   });
 });

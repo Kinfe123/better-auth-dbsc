@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   createBoundToken,
   createDbscChallenge,
-  createStepUpToken,
+  createFreshProofToken,
   formatChallengeHeader,
   formatCookieAttributes,
   formatRegistrationHeader,
@@ -12,7 +12,7 @@ import {
   parseStoredPublicKey,
   readBoundToken,
   readDbscChallenge,
-  readStepUpToken,
+  readFreshProofToken,
   verifyRefreshProof,
   verifyRegistrationProof,
   type DbscError,
@@ -339,14 +339,14 @@ describe("signed values", () => {
   });
 
   it("reads a fresh-proof challenge only for its action", async () => {
-    const token = await createStepUpToken({
+    const token = await createFreshProofToken({
       secret,
       sessionToken: "t1",
       action: "/change-email",
       nowMs: now,
     });
-    const read = (input: Partial<Parameters<typeof readStepUpToken>[0]>) =>
-      readStepUpToken({
+    const read = (input: Partial<Parameters<typeof readFreshProofToken>[0]>) =>
+      readFreshProofToken({
         secret,
         sessionToken: "t1",
         action: "/change-email",

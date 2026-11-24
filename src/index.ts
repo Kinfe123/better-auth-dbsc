@@ -7,11 +7,13 @@ export {
   resolveDbscOptions,
 } from "./dbsc-plugin.ts";
 export type {
-  DbscEvent,
+  DbscFreshProofRule,
+  DbscHookContext,
+  DbscHooks,
   DbscOptions,
   DbscRefusalReason,
   DbscStatusState,
-  DbscStepUpRule,
+  DbscSessionRef,
   DbscUnboundPolicy,
   FreshProofState,
   ResolvedDbscOptions,

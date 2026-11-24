@@ -2,19 +2,24 @@ import { DatabaseSync } from "node:sqlite";
 import { betterAuth, type BetterAuthOptions } from "better-auth";
 import { getMigrations } from "better-auth/db/migration";
 import { exportJWK, generateKeyPair, SignJWT, type CryptoKey, type JWK } from "jose";
+import { vi } from "vitest";
 import { dbsc, type DbscOptions } from "../src/index.ts";
 
 export const ORIGIN = "http://localhost:3000";
 export const BASE = `${ORIGIN}/api/auth`;
 export const BOUND_COOKIE = "better-auth.dbsc_token";
-export const STEP_UP_COOKIE = "better-auth.dbsc_step_up";
+export const FRESH_PROOF_COOKIE = "better-auth.dbsc_fresh_proof";
 
-/** A clock the plugin reads through its `now` option. */
+/**
+ * Moves `Date` for the plugin, Better Auth, and jose together. Only `Date` is faked, so
+ * timers and promises run normally. `test/setup.ts` restores real timers after each test.
+ */
 export class Clock {
-  constructor(public ms = Date.now()) {}
-  now = () => this.ms;
+  constructor() {
+    vi.useFakeTimers({ toFake: ["Date"], now: Date.now() });
+  }
   advance(seconds: number) {
-    this.ms += seconds * 1000;
+    vi.setSystemTime(Date.now() + seconds * 1000);
   }
 }
 
@@ -35,7 +40,7 @@ export async function createTestAuth(
     advanced: { disableOriginCheck: false },
     logger: { disabled: true },
     ...extra,
-    plugins: [dbsc({ now: clock.now, ...pluginOptions }), ...(extra.plugins ?? [])],
+    plugins: [dbsc(pluginOptions), ...(extra.plugins ?? [])],
   } satisfies BetterAuthOptions;
   const { runMigrations } = await getMigrations(options);
   await runMigrations();

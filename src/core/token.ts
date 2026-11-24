@@ -9,7 +9,7 @@ const encoder = new TextEncoder();
 const DOMAIN = {
   challenge: "dbsc.challenge.v1",
   bound: "dbsc.bound-cookie.v1",
-  stepUp: "dbsc.step-up.v1",
+  freshProof: "dbsc.fresh-proof.v1",
 } as const;
 
 /** What a challenge is for. A registration challenge never answers a refresh, and the reverse. */
@@ -117,7 +117,7 @@ export async function readBoundToken(
   return valid ? { expiresAtMs: Number(expires) * 1000, issuedAtMs: Number(issued) } : null;
 }
 
-export interface CreateStepUpTokenInput {
+export interface CreateFreshProofTokenInput {
   secret: string;
   sessionToken: string;
   action: string;
@@ -125,12 +125,12 @@ export interface CreateStepUpTokenInput {
 }
 
 /** A fresh-proof challenge for one action: `<issued ms>.<nonce>.<mac>`. */
-export async function createStepUpToken(input: CreateStepUpTokenInput): Promise<string> {
+export async function createFreshProofToken(input: CreateFreshProofTokenInput): Promise<string> {
   const issued = String(input.nowMs);
   const nonce = randomId();
   const mac = await sign(
     input.secret,
-    DOMAIN.stepUp,
+    DOMAIN.freshProof,
     input.sessionToken,
     input.action,
     nonce,
@@ -139,15 +139,15 @@ export async function createStepUpToken(input: CreateStepUpTokenInput): Promise<
   return `${issued}.${nonce}.${mac}`;
 }
 
-export interface ReadStepUpTokenInput extends Omit<CreateStepUpTokenInput, "nowMs"> {
+export interface ReadFreshProofTokenInput extends Omit<CreateFreshProofTokenInput, "nowMs"> {
   token: string | null | undefined;
   nowMs: number;
   ttlSeconds: number;
 }
 
 /** When the fresh-proof challenge was issued, or `null` unless it is live and for this action. */
-export async function readStepUpToken(
-  input: ReadStepUpTokenInput,
+export async function readFreshProofToken(
+  input: ReadFreshProofTokenInput,
 ): Promise<{ issuedAtMs: number } | null> {
   const parts = splitParts(input.token, 3);
   if (!parts) return null;
@@ -158,7 +158,7 @@ export async function readStepUpToken(
   const valid = await verify(
     input.secret,
     mac,
-    DOMAIN.stepUp,
+    DOMAIN.freshProof,
     input.sessionToken,
     input.action,
     nonce,

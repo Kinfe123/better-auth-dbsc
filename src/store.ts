@@ -10,7 +10,7 @@ export interface DbscBinding {
 }
 
 /** A proof that answers a challenge: a DBSC refresh, or a fresh proof for one action. */
-export type DbscProofKind = "refresh" | "step-up";
+export type DbscProofKind = "refresh" | "fresh-proof";
 
 /**
  * Where bindings live. The default keeps them in a `dbscSession` table through Better
@@ -57,7 +57,7 @@ export const dbscSchema = {
       /** Issue time of the newest refresh challenge spent. Older ones are refused. */
       lastRefreshAt: { type: "date", required: true, input: false },
       /** Issue time of the newest fresh-proof challenge spent. */
-      lastStepUpAt: { type: "date", required: true, input: false },
+      lastFreshProofAt: { type: "date", required: true, input: false },
       /** How many proofs this binding has spent. */
       proofCount: { type: "number", required: true, defaultValue: 0, input: false },
       createdAt: { type: "date", required: true, input: false },
@@ -118,7 +118,7 @@ export function createAdapterDbscStore(adapter: DbscStoreAdapter): DbscStore {
             publicKey: JSON.stringify(binding.publicKey),
             thumbprint: binding.thumbprint,
             lastRefreshAt: epoch,
-            lastStepUpAt: epoch,
+            lastFreshProofAt: epoch,
             proofCount: 0,
             createdAt: new Date(),
           },
@@ -137,7 +137,7 @@ export function createAdapterDbscStore(adapter: DbscStoreAdapter): DbscStore {
     },
 
     async spend(sessionId, kind, issuedAtMs) {
-      const field = kind === "refresh" ? "lastRefreshAt" : "lastStepUpAt";
+      const field = kind === "refresh" ? "lastRefreshAt" : "lastFreshProofAt";
       const issuedAt = new Date(issuedAtMs);
       const row = await adapter.incrementOne({
         model: DBSC_MODEL,
