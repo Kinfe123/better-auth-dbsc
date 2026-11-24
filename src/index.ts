@@ -8,12 +8,10 @@ export {
 } from "./dbsc-plugin.ts";
 export type {
   DbscFreshProofRule,
-  DbscHookContext,
-  DbscHooks,
+  DbscEvent,
   DbscOptions,
   DbscRefusalReason,
   DbscStatusState,
-  DbscSessionRef,
   DbscUnboundPolicy,
   FreshProofState,
   ResolvedDbscOptions,

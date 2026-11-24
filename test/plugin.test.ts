@@ -270,21 +270,19 @@ describe("registration", () => {
     expect(register.status).toBe(200);
   });
 
-  it("lets beforeRegistration skip a session, and honors the header names", async () => {
-    const seen: string[] = [];
+  it("lets shouldRegister skip a session, and honors the header names", async () => {
+    const seen: (string | undefined)[] = [];
     const off = await createTestAuth({
-      dbscHooks: {
-        beforeRegistration: ({ user, session }) => {
-          seen.push(`${user.email}:${session.userId === user.id}`);
-          return false;
-        },
+      shouldRegister: (ctx) => {
+        seen.push(ctx.context.newSession?.user.email);
+        return false;
       },
     });
     const email = "skip@example.com";
     expect(
       (await new Browser(off.auth).signUp(email)).headers.get("secure-session-registration"),
     ).toBeNull();
-    expect(seen).toEqual([`${email}:true`]);
+    expect(seen).toEqual([email]);
 
     const standard = await createTestAuth({ advanced: { headers: "standard" } });
     const response = await new Browser(standard.auth).signUp();
@@ -752,20 +750,10 @@ describe("freshProof unbound policies", () => {
   });
 });
 
-describe("dbscHooks", () => {
+describe("onEvent", () => {
   it("reports the lifecycle and theft signals without key material", async () => {
     const events: Record<string, unknown>[] = [];
-    const record = (hook: string) => (data: object) => void events.push({ hook, ...data });
-    const { auth } = await createTestAuth({
-      dbscHooks: {
-        afterRegistration: record("afterRegistration"),
-        onRefreshChallenged: record("onRefreshChallenged"),
-        onProofRejected: record("onProofRejected"),
-        afterRefresh: record("afterRefresh"),
-        onCredentialMissing: record("onCredentialMissing"),
-        onTerminate: record("onTerminate"),
-      },
-    });
+    const { auth } = await createTestAuth({ onEvent: (event) => void events.push(event) });
     const { browser, device, register, registration } = await signUpAndBind(auth);
     const session = await browser.getSession();
     const ids = { sessionId: session?.session.id, userId: session?.user.id };
@@ -779,12 +767,12 @@ describe("dbscHooks", () => {
     await browser.refresh(undefined, '"another-app"');
 
     expect(events).toEqual([
-      { hook: "afterRegistration", ...ids },
-      { hook: "onRefreshChallenged", ...ids, reason: "missing_proof" },
-      { hook: "onProofRejected", ...ids, reason: "INVALID_SIGNATURE" },
-      { hook: "afterRefresh", ...ids },
-      { hook: "onCredentialMissing", ...ids, via: "cookie" },
-      { hook: "onTerminate", reason: "other_identifier" },
+      { type: "registered", ...ids },
+      { type: "refresh_challenged", ...ids, reason: "missing_proof" },
+      { type: "proof_rejected", ...ids, reason: "INVALID_SIGNATURE" },
+      { type: "refreshed", ...ids },
+      { type: "credential_missing", ...ids, via: "cookie" },
+      { type: "terminated", reason: "other_identifier" },
     ]);
     const serialized = JSON.stringify(events);
     const sessionToken = decodeURIComponent(
@@ -795,12 +783,10 @@ describe("dbscHooks", () => {
     }
   });
 
-  it("never changes a response when a hook throws", async () => {
+  it("never changes a response when the handler throws", async () => {
     const { auth } = await createTestAuth({
-      dbscHooks: {
-        afterRegistration: () => {
-          throw new Error("telemetry is down");
-        },
+      onEvent: () => {
+        throw new Error("telemetry is down");
       },
     });
     const { register } = await signUpAndBind(auth);
@@ -871,8 +857,7 @@ describe("options", () => {
         enforcement: { exclude: ["admin"] },
         freshProof: { paths: ["change-email"], expiresIn: -1 },
         rateLimit: { window: 0 },
-        // An option from an earlier version, to show the message it gets.
-        dbscHooks: { onEvent: () => {} } as DbscOptions["dbscHooks"],
+        onEvent: "metrics" as unknown as DbscOptions["onEvent"],
         advanced: { sessionIdentifier: "" },
       }),
     ).toThrowErrorMatchingInlineSnapshot(`
@@ -886,7 +871,7 @@ describe("options", () => {
         - \`freshProof.paths\` entries must be paths starting with \`/\`, such as \`/admin/\`.
         - \`freshProof.expiresIn\` must be a positive integer.
         - \`rateLimit.window\` must be a positive integer.
-        - \`dbscHooks.onEvent\` is not a hook. Hooks: beforeRegistration, afterRegistration, onRegistrationRefused, afterRefresh, onRefreshChallenged, onProofRejected, onCredentialMissing, onFreshProofChallenged, afterFreshProof, onUnboundRefused, onTerminate.
+        - \`onEvent\` must be a function.
         - \`advanced.sessionIdentifier\` must be non-empty printable ASCII.]
     `);
   });
