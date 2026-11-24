@@ -6,6 +6,10 @@ When a browser with DBSC support signs in, it creates a key in the TPM. Today th
 
 Browsers without DBSC ignore the registration header and keep using the normal Better Auth session. Nothing changes for them.
 
+```sh
+pnpm add @farming-labs/better-auth-dbsc
+```
+
 ```ts
 import { betterAuth } from "better-auth";
 import { dbsc } from "@farming-labs/better-auth-dbsc";
@@ -165,6 +169,10 @@ dbsc({
 
 On a bound session, the first attempt is refused with `403 DBSC_FRESH_PROOF_REQUIRED` and its bound cookie removed. The browser refreshes with its key, and the retry passes once. A copied cookie can't answer, however fresh it is.
 
+A navigation (`Sec-Fetch-Mode: navigate`), such as a link to `/oauth2/authorize` or a form post, gets `307` back to the same URL instead, because the browser would show a JSON 403 to the user. The browser holds the redirected request, refreshes with its key, and follows it. A `307` keeps a form post's method and body.
+
+An endpoint that another endpoint runs inside the same request is checked once. The OAuth provider's consent and continue endpoints re-enter `/oauth2/authorize` through the hook pipeline, so listing both `/oauth2/consent` and `/oauth2/authorize` asks for one proof, not two.
+
 `unbound` decides what sessions that aren't bound get on those paths:
 - `"allow"` passes them.
 - `"fresh-session"` passes them only while they're younger than Better Auth's `session.freshAge`, else `403 SESSION_NOT_FRESH`.
@@ -312,6 +320,16 @@ pnpm install
 pnpm test        # registration, refresh, replay races, enforcement, freshProof, events, threat model
 pnpm example     # http://localhost:3000: a sign-up form and a protected /me route
 ```
+
+CI runs lint, format, typecheck, tests, the build and a check of the packed tarball on Node 22 and 24, plus the tests against Better Auth 1.7.0, the oldest release `peerDependencies` admits.
+
+## Releasing
+
+```sh
+pnpm release     # bumpp: commits "chore: release vX.Y.Z", tags vX.Y.Z, pushes
+```
+
+The tag runs the release workflow, which checks the tag against `package.json`, runs every check again, publishes to npm with provenance through trusted publishing (no npm token), and creates the GitHub release. A prerelease such as `0.2.0-beta.1` publishes under the `next` dist-tag.
 
 ## Limits
 

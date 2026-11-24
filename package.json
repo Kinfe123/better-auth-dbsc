@@ -27,6 +27,7 @@
   "publishConfig": {
     "access": "public"
   },
+  "packageManager": "pnpm@10.9.0",
   "files": [
     "dist",
     "docs",
@@ -51,11 +52,14 @@
     "build": "tsdown",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "lint": "oxlint src test example scripts",
-    "format": "oxfmt src test example scripts",
-    "format:check": "oxfmt --check src test example scripts",
+    "lint": "oxlint src test example scripts bump.config.ts",
+    "format": "oxfmt src test example scripts bump.config.ts",
+    "format:check": "oxfmt --check src test example scripts bump.config.ts",
     "generate:migrations": "node scripts/generate-migrations.ts",
-    "example": "node example/migrate.ts && node example/server.ts"
+    "example": "node example/migrate.ts && node example/server.ts",
+    "check:package": "node scripts/check-package.ts",
+    "prepublishOnly": "pnpm build && pnpm check:package",
+    "release": "bumpp"
   },
   "dependencies": {
     "jose": "^6.2.18"
@@ -66,6 +70,7 @@
   "devDependencies": {
     "@types/node": "^26.6.6",
     "better-auth": "1.7.27",
+    "bumpp": "12.3.0",
     "oxfmt": "^0.80.0",
     "oxlint": "^1.95.0",
     "tsdown": "^0.23.7",
