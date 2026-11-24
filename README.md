@@ -96,8 +96,8 @@ dbsc({
   algorithms: ["ES256", "RS256"], // offered to the browser, in order
   headers: "both", // "standard" | "legacy" | "both"
   sessionIdentifier: "better-auth",
-  boundCookieMaxAgeSeconds: 300,
-  challengeTtlSeconds: 300,
+  boundCookieMaxAge: 300,
+  challengeExpiresIn: 300,
   scope: {
     origin: undefined, // the origin of Better Auth's baseURL
     includeSite: false,
@@ -106,7 +106,7 @@ dbsc({
   },
   allowedRefreshInitiators: ["*"],
   enforce: true, // false | { exclude: ["/admin/"] }
-  stepUp: undefined, // { paths, unbound: "allow", ttlSeconds: 60 }
+  stepUp: undefined, // { paths, unbound: "allow", expiresIn: 60 }
   onEvent: undefined, // (event) => void
   rateLimit: { window: 60, max: 600 }, // or false
   shouldRegister: undefined, // (ctx) => boolean
@@ -118,8 +118,8 @@ dbsc({
 Invalid options throw at startup with every problem listed at once:
 
 ```
-TypeError: Invalid dbsc() options:
-  - `boundCookieMaxAgeSeconds` must be a positive integer.
+BetterAuthError: Invalid dbsc() options:
+  - `boundCookieMaxAge` must be a positive integer.
   - `stepUp.paths` entries must be paths starting with `/`, such as `/admin/`.
 ```
 
@@ -138,8 +138,8 @@ TypeError: Invalid dbsc() options:
 | `algorithms` | Signing algorithms offered, in preference order. Only `ES256` and `RS256` are accepted. |
 | `headers` | `"standard"` sends `Secure-Session-*`, from the W3C draft and shipping Chrome. `"legacy"` sends `Sec-Session-*`, from the origin trial. `"both"` sends both. Request headers are always read under both names. |
 | `sessionIdentifier` | The browser keys DBSC sessions by site and this value. One value per app means a new sign-in replaces the old DBSC session instead of adding another. Give apps that share a site different values. |
-| `boundCookieMaxAgeSeconds` | How long a copied cookie keeps working. Shorter means more refreshes. |
-| `challengeTtlSeconds` | How long a registration or refresh challenge is accepted. |
+| `boundCookieMaxAge` | Seconds a copied cookie keeps working. Shorter means more refreshes. |
+| `challengeExpiresIn` | Seconds a registration or refresh challenge is accepted. |
 | `scope.origin` | The origin the DBSC session covers. |
 | `scope.includeSite` | Cover every subdomain of the site. On `app.example.com` the browser first checks `https://example.com/.well-known/device-bound-sessions` for a `registering_origins` entry. Only turn this on if you serve that file. |
 | `scope.exclude` | Path prefixes the browser never holds for a refresh, such as `/assets/`. The DBSC endpoints are always excluded. |
@@ -159,7 +159,7 @@ TypeError: Invalid dbsc() options:
 |---|---|
 | `stepUp.paths` | Better Auth paths that need a proof made after the request arrived, as a list (`["/change-email"]`) or a map with a policy per path (`{ "/delete-user": { unbound: "deny" } }`). |
 | `stepUp.unbound` | What sessions that aren't bound get on those paths: `"allow"` passes them, `"fresh-session"` passes them only while younger than Better Auth's `session.freshAge` (else `403 SESSION_NOT_FRESH`), and `"deny"` refuses them with `403 DBSC_BINDING_REQUIRED`. |
-| `stepUp.ttlSeconds` | How long a fresh-proof challenge waits for its retry. |
+| `stepUp.expiresIn` | Seconds a fresh-proof challenge waits for its retry. |
 
 ### Observing and limiting
 
@@ -209,7 +209,7 @@ if (response.state === "challenge") {
 
 ## Status
 
-`GET /api/auth/dbsc/status`, or `auth.api.dbscStatus({ headers })`, answers `{ state }`:
+`GET /api/auth/dbsc/get-status`, `auth.api.getDbscStatus({ headers })`, or `authClient.dbsc.getStatus()` answers `{ state }`:
 
 | `state` | Meaning |
 |---|---|
@@ -243,6 +243,32 @@ dbsc({
 
 Events carry session ids, user ids, and reason codes, never keys, challenges, or cookies. `onEvent` runs through Better Auth's background task handler when one is configured. If it throws, the error is logged and the response doesn't change.
 
+## Endpoints
+
+| Path | Server | Client | Called by |
+|---|---|---|---|
+| `POST /dbsc/register` | `auth.api.registerDbscSession` | — | The browser, after sign-in. |
+| `POST /dbsc/refresh` | `auth.api.refreshDbscSession` | — | The browser, when the bound cookie lapses. |
+| `GET /dbsc/get-status` | `auth.api.getDbscStatus` | `authClient.dbsc.getStatus` | Your app. |
+| none, server-only | `auth.api.requireFreshProof` | — | Your server code. |
+
+The three HTTP endpoints carry OpenAPI metadata, so Better Auth's `openAPI()` plugin documents them.
+
+## Error codes
+
+`DBSC_ERROR_CODES` is built with Better Auth's `defineErrorCodes`, and each entry is a `{ code, message }`. Errors are thrown with `APIError.from`, and the codes are on `$ERROR_CODES` for both the server and the client plugin.
+
+| Code | Status | When |
+|---|---|---|
+| `DBSC_CREDENTIAL_REQUIRED` | 401 | A bound session was sent as a bearer token. |
+| `DBSC_FRESH_PROOF_REQUIRED` | 403 | A `stepUp` path needs a proof the browser hasn't made yet. |
+| `DBSC_BINDING_REQUIRED` | 403 | A `stepUp` path with `unbound: "deny"` got a plain session. |
+| `SESSION_NOT_FRESH` | 403 | Better Auth's own code, for `unbound: "fresh-session"`. |
+| `DBSC_CHALLENGE_REQUIRED` | 403 | A refresh needs a proof over the new challenge. The browser retries. |
+| `DBSC_SESSION_ID_REQUIRED` | 400 | A refresh without `Sec-Secure-Session-Id`, so not from the browser. |
+| `DBSC_DISABLED`, `DBSC_PROOF_REQUIRED`, `DBSC_INVALID_CHALLENGE`, `DBSC_INVALID_PROOF`, `DBSC_BOUND_TO_OTHER_KEY` | 400 | A registration was refused. `DBSC_INVALID_PROOF` carries the `DbscError` as its `cause`. |
+| `DBSC_SESSION_REQUIRED` | 401 | A registration without a signed-in session. |
+
 ## Store
 
 ```ts
@@ -259,14 +285,14 @@ If sessions live only in `secondaryStorage`, the default store refuses to start,
 
 ## Client
 
-The browser drives DBSC by itself, so the client needs no code. The client plugin adds types and the `status` call:
+The browser drives DBSC by itself, so the client needs no code. The client plugin adds types, the error codes, and `getStatus`:
 
 ```ts
 import { createAuthClient } from "better-auth/react";
 import { dbscClient } from "better-auth-dbsc/client";
 
 export const authClient = createAuthClient({ plugins: [dbscClient()] });
-const { data } = await authClient.dbsc.status(); // { state: "bound" | ... }
+const { data } = await authClient.dbsc.getStatus(); // { state: "bound" | ... }
 ```
 
 ## Building blocks
@@ -306,7 +332,7 @@ pnpm example     # http://localhost:3000: a sign-up form and a protected /me rou
 ## Limits
 
 - **Not tested against real Chrome.** The wire format follows the W3C Editor's Draft (November 2026). Because Chrome builds have differed, the proof parser also accepts the key in the payload (`jwk` or `key`) and a string `iat`. Try it on Chrome 146+ on Windows before relying on it.
-- **Paths outside `stepUp` stay exposed for up to `boundCookieMaxAgeSeconds`.** Someone who copies both cookies can use them until the bound cookie expires.
+- **Paths outside `stepUp` stay exposed for up to `boundCookieMaxAge`.** Someone who copies both cookies can use them until the bound cookie expires.
 - **DBSC requests skip Better Auth's origin check.** The browser's registration and refresh requests aren't guaranteed to carry `Origin`. On those two endpoints the CSRF defense is the signed proof over a server challenge, and refresh also requires the `Sec-Secure-Session-Id` header, which a page can't send cross-site without a preflight.
 - **One store read per request for sessions with a token.** The gate reads the session and its binding to know whether a bound cookie is required.
 - **The `authorization` registration parameter isn't sent.** `verifyRegistrationProof` checks it when you pass one.

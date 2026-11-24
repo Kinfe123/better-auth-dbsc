@@ -1,6 +1,8 @@
-import { bearer } from "better-auth/plugins";
+import { bearer, openAPI } from "better-auth/plugins";
 import { describe, expect, it } from "vitest";
-import { createMemoryDbscStore, resolveDbscOptions } from "../src/index.ts";
+import packageJson from "../package.json" with { type: "json" };
+import { dbscClient } from "../src/client.ts";
+import { createMemoryDbscStore, dbsc, DBSC_ERROR_CODES, resolveDbscOptions } from "../src/index.ts";
 import {
   BOUND_COOKIE,
   Browser,
@@ -170,11 +172,11 @@ describe("registration", () => {
     const thief = await Device.create();
     const takeover = await browser.register(await thief.registrationProof(registration));
     expect(takeover.status).toBe(400);
-    expect((await takeover.json()).message).toMatch(/bound to another key/);
+    expect((await takeover.json()).code).toBe("DBSC_BOUND_TO_OTHER_KEY");
   });
 
   it("refuses an expired registration challenge", async () => {
-    const { auth, clock } = await createTestAuth({ challengeTtlSeconds: 60 });
+    const { auth, clock } = await createTestAuth({ challengeExpiresIn: 60 });
     const browser = new Browser(auth);
     const signUp = await browser.signUp();
     clock.advance(61);
@@ -215,7 +217,7 @@ describe("registration", () => {
       ),
     );
     expect(response.status).toBe(400);
-    expect((await response.json()).message).toMatch(/aud/);
+    expect((await response.json()).code).toBe("DBSC_INVALID_PROOF");
   });
 
   it("needs a signed-in session", async () => {
@@ -327,7 +329,7 @@ describe("refresh", () => {
   });
 
   it("refuses an expired challenge with a new one", async () => {
-    const { auth, clock } = await createTestAuth({ challengeTtlSeconds: 60 });
+    const { auth, clock } = await createTestAuth({ challengeExpiresIn: 60 });
     const { browser, device, register } = await signUpAndBind(auth);
     const challenge = challengeFrom(register.headers.get("secure-session-challenge"));
     clock.advance(61);
@@ -384,7 +386,7 @@ describe("enforcement", () => {
   });
 
   it("refuses an expired bound cookie until the browser refreshes", async () => {
-    const { auth, clock } = await createTestAuth({ boundCookieMaxAgeSeconds: 60 });
+    const { auth, clock } = await createTestAuth({ boundCookieMaxAge: 60 });
     const { browser, device } = await signUpAndBind(auth);
     clock.advance(61);
     // The jar still sends the cookie; the server does not trust its own Max-Age.
@@ -594,7 +596,7 @@ describe("stepUp", () => {
 
   it("is not reachable over HTTP", async () => {
     const { auth } = await createTestAuth();
-    const response = await new Browser(auth).post("/dbsc/fresh-proof", { action: "x" });
+    const response = await new Browser(auth).post("/dbsc/require-fresh-proof", { action: "x" });
     expect(response.status).toBe(404);
   });
 });
@@ -724,26 +726,55 @@ describe("options", () => {
     expect(() =>
       resolveDbscOptions({
         algorithms: [],
-        boundCookieMaxAgeSeconds: 0,
-        challengeTtlSeconds: 1.5,
+        boundCookieMaxAge: 0,
+        challengeExpiresIn: 1.5,
         sessionIdentifier: "",
         scope: { origin: "https://example.com/path", exclude: ["static"] },
         enforce: { exclude: ["admin"] },
-        stepUp: { paths: ["change-email"], ttlSeconds: -1 },
+        stepUp: { paths: ["change-email"], expiresIn: -1 },
         rateLimit: { window: 0, max: 10 },
       }),
     ).toThrowErrorMatchingInlineSnapshot(`
-      [TypeError: Invalid dbsc() options:
+      [BetterAuthError: Invalid dbsc() options:
         - \`algorithms\` must be a non-empty list of "ES256" and/or "RS256".
         - \`sessionIdentifier\` must be non-empty printable ASCII.
-        - \`boundCookieMaxAgeSeconds\` must be a positive integer.
-        - \`challengeTtlSeconds\` must be a positive integer.
+        - \`boundCookieMaxAge\` must be a positive integer.
+        - \`challengeExpiresIn\` must be a positive integer.
         - \`scope.origin\` must be an origin such as \`https://app.example.com\`, with no path.
         - \`scope.exclude\` entries must be paths starting with \`/\`, such as \`/admin/\`.
         - \`enforce.exclude\` entries must be paths starting with \`/\`, such as \`/admin/\`.
         - \`stepUp.paths\` entries must be paths starting with \`/\`, such as \`/admin/\`.
-        - \`stepUp.ttlSeconds\` must be a positive integer.
+        - \`stepUp.expiresIn\` must be a positive integer.
         - \`rateLimit.window\` must be a positive integer.]
     `);
+  });
+});
+
+describe("better auth conventions", () => {
+  it("carries the package version and the same error codes on server and client", () => {
+    const server = dbsc();
+    const client = dbscClient();
+    expect(server.version).toBe(packageJson.version);
+    expect(client.version).toBe(packageJson.version);
+    expect(server.$ERROR_CODES).toBe(DBSC_ERROR_CODES);
+    expect(client.$ERROR_CODES).toBe(DBSC_ERROR_CODES);
+    expect(DBSC_ERROR_CODES.DBSC_CREDENTIAL_REQUIRED).toMatchObject({
+      code: "DBSC_CREDENTIAL_REQUIRED",
+      message: "This session is bound to a device and cannot be used as a bearer token",
+    });
+  });
+
+  it("documents its HTTP endpoints in Better Auth's OpenAPI schema, and only those", async () => {
+    const { auth } = await createTestAuth({}, { plugins: [openAPI()] });
+    // `createTestAuth` types the API from dbsc() alone; openAPI() adds this endpoint.
+    const api = auth.api as typeof auth.api & {
+      generateOpenAPISchema(): Promise<{
+        paths: Record<string, { get?: { description?: string } }>;
+      }>;
+    };
+    const schema = await api.generateOpenAPISchema();
+    const paths = Object.keys(schema.paths).filter((path) => path.startsWith("/dbsc/"));
+    expect(paths.sort()).toEqual(["/dbsc/get-status", "/dbsc/refresh", "/dbsc/register"]);
+    expect(schema.paths["/dbsc/get-status"]?.get?.description).toMatch(/bound to this device/);
   });
 });

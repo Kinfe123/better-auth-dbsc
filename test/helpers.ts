@@ -99,7 +99,7 @@ export class Browser {
   }
 
   async status(): Promise<string> {
-    return (await (await this.fetch("/dbsc/status")).json()).state;
+    return (await (await this.fetch("/dbsc/get-status")).json()).state;
   }
 
   /** A DBSC refresh as Chrome sends it: the session id header, and a proof when given. */

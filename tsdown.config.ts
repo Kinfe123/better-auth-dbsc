@@ -5,5 +5,6 @@ export default defineConfig({
   format: "esm",
   dts: true,
   platform: "neutral",
+  tsconfig: "tsconfig.build.json",
   external: ["better-auth", "jose"],
 });

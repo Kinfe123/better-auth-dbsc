@@ -41,7 +41,7 @@ createServer(async (req, res) => {
     // App routes go through auth.api, so DBSC enforcement applies here too.
     const headers = new Headers(req.headers as Record<string, string>);
     const session = await auth.api.getSession({ headers });
-    const { state } = await auth.api.dbscStatus({ headers });
+    const { state } = await auth.api.getDbscStatus({ headers });
     res.writeHead(session ? 200 : 401, { "content-type": "application/json" });
     return res.end(JSON.stringify(session ? { user: session.user.email, dbsc: state } : null));
   }

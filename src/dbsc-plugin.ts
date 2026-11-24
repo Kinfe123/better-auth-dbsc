@@ -1,4 +1,5 @@
 import type { BetterAuthPlugin, InferOptionSchema, Session } from "better-auth";
+import { BASE_ERROR_CODES, BetterAuthError } from "better-auth";
 import { APIError, createAuthEndpoint, createAuthMiddleware } from "better-auth/api";
 import { mergeSchema } from "better-auth/db";
 import {
@@ -38,17 +39,15 @@ import {
   type DbscStore,
   type DbscStoreAdapter,
 } from "./store.ts";
+import { DBSC_ERROR_CODES } from "./error-codes.ts";
+import packageJson from "../package.json" with { type: "json" };
+
+export { DBSC_ERROR_CODES };
 
 export const DBSC_REGISTER_PATH = "/dbsc/register";
 export const DBSC_REFRESH_PATH = "/dbsc/refresh";
 /** Cookie keys passed to Better Auth's cookie factory, so `advanced.cookies.<key>` applies. */
 export const DBSC_COOKIE_KEYS = { bound: "dbsc_token", stepUp: "dbsc_step_up" } as const;
-export const DBSC_ERROR_CODES = {
-  DBSC_CREDENTIAL_REQUIRED: "DBSC_CREDENTIAL_REQUIRED",
-  DBSC_FRESH_PROOF_REQUIRED: "DBSC_FRESH_PROOF_REQUIRED",
-  DBSC_BINDING_REQUIRED: "DBSC_BINDING_REQUIRED",
-  SESSION_NOT_FRESH: "SESSION_NOT_FRESH",
-} as const;
 
 /**
  * What a session that is not bound to a device gets on a `stepUp` path.
@@ -144,16 +143,16 @@ export interface DbscOptions {
    */
   sessionIdentifier?: string;
   /**
-   * Lifetime of the bound cookie. When it lapses, the browser holds the next request and
-   * renews the cookie by signing a challenge with the device key.
+   * Lifetime of the bound cookie, in seconds. When it lapses, the browser holds the next
+   * request and renews the cookie by signing a challenge with the device key.
    * @default 300
    */
-  boundCookieMaxAgeSeconds?: number;
+  boundCookieMaxAge?: number;
   /**
-   * How long a registration or refresh challenge is accepted after it is issued.
+   * How long a registration or refresh challenge is accepted after it is issued, in seconds.
    * @default 300
    */
-  challengeTtlSeconds?: number;
+  challengeExpiresIn?: number;
   /** The DBSC session scope sent to the browser. */
   scope?: {
     /** Defaults to the origin of Better Auth's `baseURL`. */
@@ -210,10 +209,10 @@ export interface DbscOptions {
      */
     unbound?: DbscUnboundPolicy;
     /**
-     * How long a fresh-proof challenge waits for its retry.
+     * How long a fresh-proof challenge waits for its retry, in seconds.
      * @default 60
      */
-    ttlSeconds?: number;
+    expiresIn?: number;
   };
   /**
    * Called for registrations, refreshes, refusals, and theft signals. Runs through
@@ -244,8 +243,8 @@ export interface ResolvedDbscOptions {
   algorithms: DbscAlgorithm[];
   headers: DbscHeaderNames;
   sessionIdentifier: string;
-  boundCookieMaxAgeSeconds: number;
-  challengeTtlSeconds: number;
+  boundCookieMaxAge: number;
+  challengeExpiresIn: number;
   scope: {
     origin: string | undefined;
     includeSite: boolean;
@@ -254,7 +253,7 @@ export interface ResolvedDbscOptions {
   };
   allowedRefreshInitiators: string[];
   enforce: false | { exclude: string[] };
-  stepUp: { paths: Map<string, DbscUnboundPolicy>; ttlSeconds: number };
+  stepUp: { paths: Map<string, DbscUnboundPolicy>; expiresIn: number };
   onEvent: DbscOptions["onEvent"];
   rateLimit: false | { window: number; max: number };
   shouldRegister: DbscOptions["shouldRegister"];
@@ -286,10 +285,10 @@ export function resolveDbscOptions(options: DbscOptions = {}): ResolvedDbscOptio
   if (!/^[\x20-\x7e]+$/.test(sessionIdentifier)) {
     issues.push("`sessionIdentifier` must be non-empty printable ASCII.");
   }
-  const boundCookieMaxAgeSeconds = options.boundCookieMaxAgeSeconds ?? 300;
-  positiveInteger(boundCookieMaxAgeSeconds, "boundCookieMaxAgeSeconds");
-  const challengeTtlSeconds = options.challengeTtlSeconds ?? 300;
-  positiveInteger(challengeTtlSeconds, "challengeTtlSeconds");
+  const boundCookieMaxAge = options.boundCookieMaxAge ?? 300;
+  positiveInteger(boundCookieMaxAge, "boundCookieMaxAge");
+  const challengeExpiresIn = options.challengeExpiresIn ?? 300;
+  positiveInteger(challengeExpiresIn, "challengeExpiresIn");
   if (options.scope?.origin !== undefined && !isOrigin(options.scope.origin)) {
     issues.push(
       "`scope.origin` must be an origin such as `https://app.example.com`, with no path.",
@@ -320,8 +319,8 @@ export function resolveDbscOptions(options: DbscOptions = {}): ResolvedDbscOptio
   if (options.onEvent !== undefined && typeof options.onEvent !== "function") {
     issues.push("`onEvent` must be a function.");
   }
-  const stepUpTtl = options.stepUp?.ttlSeconds ?? 60;
-  positiveInteger(stepUpTtl, "stepUp.ttlSeconds");
+  const stepUpTtl = options.stepUp?.expiresIn ?? 60;
+  positiveInteger(stepUpTtl, "stepUp.expiresIn");
   const rateLimit = options.rateLimit ?? { window: 60, max: 600 };
   if (rateLimit !== false) {
     positiveInteger(rateLimit.window, "rateLimit.window");
@@ -332,7 +331,7 @@ export function resolveDbscOptions(options: DbscOptions = {}): ResolvedDbscOptio
     issues.push("`enabled` must be a boolean or a function that returns one.");
   }
   if (issues.length > 0) {
-    throw new TypeError(`Invalid dbsc() options:\n  - ${issues.join("\n  - ")}`);
+    throw new BetterAuthError(`Invalid dbsc() options:\n  - ${issues.join("\n  - ")}`);
   }
 
   const store = options.store;
@@ -342,8 +341,8 @@ export function resolveDbscOptions(options: DbscOptions = {}): ResolvedDbscOptio
     algorithms,
     headers,
     sessionIdentifier,
-    boundCookieMaxAgeSeconds,
-    challengeTtlSeconds,
+    boundCookieMaxAge,
+    challengeExpiresIn,
     scope: {
       origin: options.scope?.origin,
       includeSite: options.scope?.includeSite ?? false,
@@ -352,7 +351,7 @@ export function resolveDbscOptions(options: DbscOptions = {}): ResolvedDbscOptio
     },
     allowedRefreshInitiators: options.allowedRefreshInitiators ?? ["*"],
     enforce: options.enforce === false ? false : { exclude: enforceExclude },
-    stepUp: { paths: new Map(stepUpEntries), ttlSeconds: stepUpTtl },
+    stepUp: { paths: new Map(stepUpEntries), expiresIn: stepUpTtl },
     onEvent: options.onEvent,
     rateLimit,
     shouldRegister: options.shouldRegister,
@@ -398,6 +397,25 @@ const freshProofBody = {
   },
 } as const;
 
+const sessionConfigResponse = {
+  description: "The DBSC session config, as the browser expects it",
+  content: {
+    "application/json": {
+      schema: {
+        type: "object",
+        properties: {
+          session_identifier: { type: "string" },
+          refresh_url: { type: "string" },
+          scope: { type: "object" },
+          allowed_refresh_initiators: { type: "array", items: { type: "string" } },
+          credentials: { type: "array", items: { type: "object" } },
+          continue: { type: "boolean" },
+        },
+      },
+    },
+  },
+} as const;
+
 /**
  * Device Bound Session Credentials for Better Auth.
  *
@@ -405,7 +423,7 @@ const freshProofBody = {
  * short-lived cookie fresh by signing server challenges. Browsers that do not ignore the
  * registration header and keep using the plain session cookie.
  */
-export const dbsc = (options?: DbscOptions) => {
+export const dbsc = <O extends DbscOptions>(options?: O) => {
   const config = resolveDbscOptions(options);
 
   /** Telemetry never changes a response: a throwing handler is logged, not rethrown. */
@@ -463,7 +481,7 @@ export const dbsc = (options?: DbscOptions) => {
       action,
       token: ctx.getCookie(stepUp.name),
       nowMs: config.now(),
-      ttlSeconds: config.stepUp.ttlSeconds,
+      ttlSeconds: config.stepUp.expiresIn,
     });
     if (
       challenge &&
@@ -503,24 +521,21 @@ export const dbsc = (options?: DbscOptions) => {
         return;
     }
     await emit(ctx, { type: "unbound_refused", ...ids(state.session), action, policy });
-    throw new APIError(
+    throw APIError.from(
       "FORBIDDEN",
       policy === "deny"
-        ? {
-            message: "This action needs a device-bound session.",
-            code: DBSC_ERROR_CODES.DBSC_BINDING_REQUIRED,
-          }
-        : { message: "Sign in again to do this.", code: DBSC_ERROR_CODES.SESSION_NOT_FRESH },
+        ? DBSC_ERROR_CODES.DBSC_BINDING_REQUIRED
+        : BASE_ERROR_CODES.SESSION_NOT_FRESH,
     );
   }
 
   function cookies(ctx: HookContext) {
     return {
       bound: ctx.context.createAuthCookie(DBSC_COOKIE_KEYS.bound, {
-        maxAge: config.boundCookieMaxAgeSeconds,
+        maxAge: config.boundCookieMaxAge,
       }),
       stepUp: ctx.context.createAuthCookie(DBSC_COOKIE_KEYS.stepUp, {
-        maxAge: config.stepUp.ttlSeconds,
+        maxAge: config.stepUp.expiresIn,
       }),
     };
   }
@@ -530,7 +545,7 @@ export const dbsc = (options?: DbscOptions) => {
     const value = await createBoundToken({
       secret: ctx.context.secret,
       sessionToken,
-      expiresAtMs: config.now() + config.boundCookieMaxAgeSeconds * 1000,
+      expiresAtMs: config.now() + config.boundCookieMaxAge * 1000,
       issuedAtMs,
     });
     // The value is a MAC over the session token already, so a plain cookie is enough.
@@ -602,6 +617,7 @@ export const dbsc = (options?: DbscOptions) => {
 
   return {
     id: "dbsc",
+    version: packageJson.version,
     schema: mergeSchema(dbscSchema, options?.schema),
 
     init(ctx) {
@@ -610,7 +626,7 @@ export const dbsc = (options?: DbscOptions) => {
         ctx.options.secondaryStorage &&
         !ctx.options.session?.storeSessionInDatabase
       ) {
-        throw new TypeError(
+        throw new BetterAuthError(
           "dbsc() keeps bindings in a `dbscSession` table that references `session`, but sessions " +
             "live only in `secondaryStorage`. Set `session.storeSessionInDatabase: true`, or pass " +
             "your own `store` to dbsc().",
@@ -627,22 +643,44 @@ export const dbsc = (options?: DbscOptions) => {
     },
 
     endpoints: {
-      /** The browser posts a proof signed by its new key over the sign-in's challenge. */
-      dbscRegister: createAuthEndpoint(
+      /**
+       * ### Endpoint
+       *
+       * POST `/dbsc/register`
+       *
+       * ### API Methods
+       *
+       * **server:**
+       * `auth.api.registerDbscSession`
+       *
+       * The browser calls this itself: it posts a proof signed by its new key over the
+       * challenge from the sign-in response. Your code never needs to.
+       */
+      registerDbscSession: createAuthEndpoint(
         DBSC_REGISTER_PATH,
-        { method: "POST", disableBody: true, requireHeaders: true },
+        {
+          method: "POST",
+          disableBody: true,
+          requireHeaders: true,
+          metadata: {
+            openapi: {
+              summary: "Register a device-bound session",
+              description:
+                "Called by the browser after sign-in. Takes a proof in `Secure-Session-Response`, binds the session to the device key, sets the bound cookie, and returns the DBSC session config.",
+              responses: { 200: sessionConfigResponse },
+            },
+          },
+        },
         async (ctx) => {
-          const refuse = (message: string) =>
-            new APIError("BAD_REQUEST", { message, code: "DBSC_REGISTRATION_REFUSED" });
-          if (!(await config.enabled())) throw refuse("DBSC is turned off.");
+          if (!(await config.enabled())) {
+            throw APIError.from("BAD_REQUEST", DBSC_ERROR_CODES.DBSC_DISABLED);
+          }
           const proof = parseProofHeader(readDbscHeader(ctx.headers!, "response"));
-          if (!proof) throw refuse("DBSC registration needs a `Secure-Session-Response` header.");
+          if (!proof) throw APIError.from("BAD_REQUEST", DBSC_ERROR_CODES.DBSC_PROOF_REQUIRED);
           const token = await readSessionToken(ctx);
           const found = token ? await ctx.context.internalAdapter.findSession(token) : null;
           if (!token || !found || new Date(found.session.expiresAt).getTime() <= config.now()) {
-            throw new APIError("UNAUTHORIZED", {
-              message: "DBSC registration needs a signed-in session.",
-            });
+            throw APIError.from("UNAUTHORIZED", DBSC_ERROR_CODES.DBSC_SESSION_REQUIRED);
           }
 
           const jti = readUnverifiedChallenge(proof);
@@ -652,17 +690,18 @@ export const dbsc = (options?: DbscOptions) => {
             sessionToken: token,
             challenge: jti,
             nowMs: config.now(),
-            ttlSeconds: config.challengeTtlSeconds,
+            ttlSeconds: config.challengeExpiresIn,
           });
-          const refused = async (reason: DbscRefusalReason, message: string) => {
+          const refused = async (
+            reason: DbscRefusalReason,
+            error: (typeof DBSC_ERROR_CODES)[keyof typeof DBSC_ERROR_CODES],
+            cause?: unknown,
+          ) => {
             await emit(ctx, { type: "registration_refused", ...ids(found.session), reason });
-            return refuse(message);
+            return APIError.from("BAD_REQUEST", error, { cause });
           };
           if (!jti || !challenge) {
-            throw await refused(
-              "invalid_challenge",
-              "The registration challenge is missing, expired, or not this session's.",
-            );
+            throw await refused("invalid_challenge", DBSC_ERROR_CODES.DBSC_INVALID_CHALLENGE);
           }
 
           let verified;
@@ -673,10 +712,8 @@ export const dbsc = (options?: DbscOptions) => {
               expectedOrigin: appOrigin(ctx),
             });
           } catch (error) {
-            throw await refused(
-              "invalid_proof",
-              error instanceof Error ? error.message : "The registration proof is invalid.",
-            );
+            // The `DbscError` is the cause, so its code reaches logs without leaking to the browser.
+            throw await refused("invalid_proof", DBSC_ERROR_CODES.DBSC_INVALID_PROOF, error);
           }
 
           // The same key again, while its challenge lives, is a registration whose answer
@@ -692,8 +729,9 @@ export const dbsc = (options?: DbscOptions) => {
                 publicKey: verified.publicKey,
                 thumbprint: verified.thumbprint,
               })) || (await store.find(session.id))?.thumbprint === verified.thumbprint;
-          if (!bound)
-            throw await refused("bound_to_other_key", "This session is bound to another key.");
+          if (!bound) {
+            throw await refused("bound_to_other_key", DBSC_ERROR_CODES.DBSC_BOUND_TO_OTHER_KEY);
+          }
           if (!existing) await emit(ctx, { type: "registered", ...ids(session) });
 
           // The cookie dates from the challenge, not now: a replayed registration proof
@@ -705,20 +743,42 @@ export const dbsc = (options?: DbscOptions) => {
       ),
 
       /**
-       * The bound cookie lapsed and the browser holds a request that needs it. No proof,
-       * or a stale one: 403 with a new challenge. The bound key's proof: a new cookie.
-       * A session that is over or not bound ends the browser's DBSC session.
+       * ### Endpoint
+       *
+       * POST `/dbsc/refresh`
+       *
+       * ### API Methods
+       *
+       * **server:**
+       * `auth.api.refreshDbscSession`
+       *
+       * The browser calls this itself when the bound cookie lapses. No proof, or a stale
+       * one: 403 with a new challenge. The bound key's proof: a new cookie. A session that
+       * is over or not bound ends the browser's DBSC session.
        */
-      dbscRefresh: createAuthEndpoint(
+      refreshDbscSession: createAuthEndpoint(
         DBSC_REFRESH_PATH,
-        { method: "POST", disableBody: true, requireHeaders: true },
+        {
+          method: "POST",
+          disableBody: true,
+          requireHeaders: true,
+          metadata: {
+            openapi: {
+              summary: "Refresh a device-bound session",
+              description:
+                "Called by the browser when the bound cookie lapses. Answers 403 with a `Secure-Session-Challenge` until the request carries a proof signed by the bound key, then sets a new bound cookie.",
+              responses: {
+                200: sessionConfigResponse,
+                403: { description: "Sign the challenge in `Secure-Session-Challenge` and retry." },
+              },
+            },
+          },
+        },
         async (ctx) => {
           // Only the browser's own refresh carries this header; a page cannot set it.
           const claimedId = readDbscHeader(ctx.headers!, "sessionId");
           if (claimedId === null) {
-            throw new APIError("BAD_REQUEST", {
-              message: "A DBSC refresh needs a `Sec-Secure-Session-Id` header.",
-            });
+            throw APIError.from("BAD_REQUEST", DBSC_ERROR_CODES.DBSC_SESSION_ID_REQUIRED);
           }
           if (!(await config.enabled())) return terminate(ctx, "disabled");
           if (parseSfString(claimedId) !== config.sessionIdentifier)
@@ -736,10 +796,7 @@ export const dbsc = (options?: DbscOptions) => {
           const askAgain = async (reason: "missing_proof" | "stale_challenge" | "replayed") => {
             await emit(ctx, { type: "refresh_challenged", ...ids(found.session), reason });
             await setRefreshChallenge(ctx, token);
-            throw new APIError("FORBIDDEN", {
-              message: "Sign the new DBSC challenge and retry.",
-              code: "DBSC_CHALLENGE",
-            });
+            throw APIError.from("FORBIDDEN", DBSC_ERROR_CODES.DBSC_CHALLENGE_REQUIRED);
           };
           const proof = parseProofHeader(readDbscHeader(ctx.headers!, "response"));
           if (!proof) return askAgain("missing_proof");
@@ -750,7 +807,7 @@ export const dbsc = (options?: DbscOptions) => {
             sessionToken: token,
             challenge: jti,
             nowMs: config.now(),
-            ttlSeconds: config.challengeTtlSeconds,
+            ttlSeconds: config.challengeExpiresIn,
           });
           if (!jti || !challenge) return askAgain("stale_challenge");
           try {
@@ -766,10 +823,7 @@ export const dbsc = (options?: DbscOptions) => {
               error instanceof Error && "code" in error ? String(error.code) : "INVALID_PROOF";
             await emit(ctx, { type: "proof_rejected", ...ids(found.session), reason });
             await setRefreshChallenge(ctx, token);
-            throw new APIError("FORBIDDEN", {
-              message: "Sign the new DBSC challenge and retry.",
-              code: "DBSC_CHALLENGE",
-            });
+            throw APIError.from("FORBIDDEN", DBSC_ERROR_CODES.DBSC_CHALLENGE_REQUIRED);
           }
           // Spent only after the signature verifies.
           if (!(await store.spend(found.session.id, "refresh", challenge.issuedAtMs)))
@@ -783,13 +837,54 @@ export const dbsc = (options?: DbscOptions) => {
       ),
 
       /**
+       * ### Endpoint
+       *
+       * GET `/dbsc/get-status`
+       *
+       * ### API Methods
+       *
+       * **server:**
+       * `auth.api.getDbscStatus`
+       *
+       * **client:**
+       * `authClient.dbsc.getStatus`
+       *
        * Whether the current session is bound to this device:
        * `{ state: "bound" | "unbound" | "no-session" | "off" }`. For a "this device is
-       * protected" line in account settings. `authClient.dbsc.status()` on the client.
+       * protected" line in account settings.
        */
-      dbscStatus: createAuthEndpoint(
-        "/dbsc/status",
-        { method: "GET", requireHeaders: true },
+      getDbscStatus: createAuthEndpoint(
+        "/dbsc/get-status",
+        {
+          method: "GET",
+          requireHeaders: true,
+          metadata: {
+            openapi: {
+              summary: "Get the device binding of the current session",
+              description:
+                "Answers whether the current session is bound to this device, proven by a live bound cookie.",
+              responses: {
+                200: {
+                  description: "Successful response",
+                  content: {
+                    "application/json": {
+                      schema: {
+                        type: "object",
+                        properties: {
+                          state: {
+                            type: "string",
+                            enum: ["bound", "unbound", "no-session", "off"],
+                          },
+                        },
+                        required: ["state"],
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
         async (ctx) => {
           const answer = (state: DbscStatusState) => ctx.json({ state });
           if (!(await config.enabled())) return answer("off");
@@ -801,7 +896,16 @@ export const dbsc = (options?: DbscOptions) => {
       ),
 
       /**
-       * A fresh proof for one of your own routes or server actions. Server only:
+       * ### Endpoint
+       *
+       * Server only. No HTTP route.
+       *
+       * ### API Methods
+       *
+       * **server:**
+       * `auth.api.requireFreshProof`
+       *
+       * A fresh proof for one of your own routes or server actions:
        * `await auth.api.requireFreshProof({ headers, body: { action: "delete-account" } })`.
        *
        * - `answered`: a bound session proved itself after this action's challenge. Go on.
@@ -811,7 +915,7 @@ export const dbsc = (options?: DbscOptions) => {
        * - `no-session` and `off`: nothing was checked.
        */
       requireFreshProof: createAuthEndpoint(
-        "/dbsc/fresh-proof",
+        "/dbsc/require-fresh-proof",
         {
           method: "POST",
           body: freshProofBody,
@@ -843,11 +947,7 @@ export const dbsc = (options?: DbscOptions) => {
                 via: state.via,
               });
               if (state.via === "bearer") {
-                throw new APIError("UNAUTHORIZED", {
-                  message:
-                    "This session is bound to a device and cannot be used as a bearer token.",
-                  code: DBSC_ERROR_CODES.DBSC_CREDENTIAL_REQUIRED,
-                });
+                throw APIError.from("UNAUTHORIZED", DBSC_ERROR_CODES.DBSC_CREDENTIAL_REQUIRED);
               }
               // As if the session cookie were absent: the endpoint answers as signed out,
               // and nothing it does can touch the owner's session.
@@ -862,14 +962,9 @@ export const dbsc = (options?: DbscOptions) => {
               await unboundPolicy(ctx, state, ctx.path!, policy);
             if (policy && state.kind === "bound") {
               if ((await freshProof(ctx, state, ctx.path!)) === "challenge") {
-                throw new APIError(
-                  "FORBIDDEN",
-                  {
-                    message: "Confirm this device and try again.",
-                    code: DBSC_ERROR_CODES.DBSC_FRESH_PROOF_REQUIRED,
-                  },
-                  ctx.responseHeaders,
-                );
+                // `APIError.from` takes no headers, and the step-up cookies must reach the browser.
+                const { code, message } = DBSC_ERROR_CODES.DBSC_FRESH_PROOF_REQUIRED;
+                throw new APIError("FORBIDDEN", { code, message }, ctx.responseHeaders);
               }
             }
           }),
@@ -924,22 +1019,9 @@ export const dbsc = (options?: DbscOptions) => {
             },
           ],
 
-    $ERROR_CODES: {
-      DBSC_CREDENTIAL_REQUIRED: {
-        code: DBSC_ERROR_CODES.DBSC_CREDENTIAL_REQUIRED,
-        message: "This session is bound to a device. Refresh the DBSC credential and retry.",
-      },
-      DBSC_FRESH_PROOF_REQUIRED: {
-        code: DBSC_ERROR_CODES.DBSC_FRESH_PROOF_REQUIRED,
-        message: "Confirm this device and try again.",
-      },
-      DBSC_BINDING_REQUIRED: {
-        code: DBSC_ERROR_CODES.DBSC_BINDING_REQUIRED,
-        message: "This action needs a device-bound session.",
-      },
-    },
+    $ERROR_CODES: DBSC_ERROR_CODES,
 
-    options,
+    options: options as NoInfer<O>,
   } satisfies BetterAuthPlugin;
 };
 
