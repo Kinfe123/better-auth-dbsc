@@ -1,0 +1,72 @@
+{
+  "name": "better-auth-dbsc",
+  "version": "0.0.0",
+  "description": "Device Bound Session Credentials (DBSC) for Better Auth.",
+  "keywords": [
+    "better-auth",
+    "dbsc",
+    "device-bound-session-credentials",
+    "session",
+    "security"
+  ],
+  "license": "MIT",
+  "author": "KinfeMichael Tariku <kinfishtech@gmail.com> (https://github.com/Kinfe123)",
+  "homepage": "https://github.com/Kinfe123/better-auth-dbsc#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kinfe123/better-auth-dbsc.git"
+  },
+  "bugs": {
+    "url": "https://github.com/Kinfe123/better-auth-dbsc/issues"
+  },
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=22"
+  },
+  "files": [
+    "dist",
+    "docs",
+    "migrations"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./client": {
+      "types": "./dist/client.d.ts",
+      "default": "./dist/client.js"
+    },
+    "./core": {
+      "types": "./dist/core.d.ts",
+      "default": "./dist/core.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "lint": "oxlint src test example scripts",
+    "format": "oxfmt src test example scripts",
+    "format:check": "oxfmt --check src test example scripts",
+    "generate:migrations": "node scripts/generate-migrations.ts",
+    "example": "node example/migrate.ts && node example/server.ts"
+  },
+  "dependencies": {
+    "jose": "^6.2.18"
+  },
+  "peerDependencies": {
+    "better-auth": "^1.7.0"
+  },
+  "devDependencies": {
+    "@types/node": "^26.6.6",
+    "better-auth": "1.7.27",
+    "oxfmt": "^0.80.0",
+    "oxlint": "^1.95.0",
+    "tsdown": "^0.23.7",
+    "typescript": "^7.0.2",
+    "vitest": "^5.1.1"
+  }
+}
