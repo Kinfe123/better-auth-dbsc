@@ -337,6 +337,16 @@ pnpm test        # registration, refresh, replay races, enforcement, stepUp, eve
 pnpm example     # http://localhost:3000: a sign-up form and a protected /me route
 ```
 
+CI runs lint, format, typecheck, tests, the build and a check of the packed tarball on Node 22 and 24, plus the tests against Better Auth 1.7.0, the oldest release `peerDependencies` admits.
+
+## Releasing
+
+```sh
+pnpm release     # bumpp: commits "chore: release vX.Y.Z", tags vX.Y.Z, pushes
+```
+
+The tag runs the release workflow, which checks the tag against `package.json`, runs every check again, publishes to npm with provenance through trusted publishing (no npm token), and creates the GitHub release. A prerelease such as `0.2.0-beta.1` publishes under the `next` dist-tag.
+
 ## Limits
 
 - **Not tested against real Chrome.** The wire format follows the W3C Editor's Draft (November 2026). Because Chrome builds have differed, the proof parser also accepts the key in the payload (`jwk` or `key`) and a string `iat`. Try it on Chrome 146+ on Windows before relying on it.
