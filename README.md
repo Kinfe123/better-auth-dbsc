@@ -188,6 +188,10 @@ dbsc({
 
 On a bound session, the first attempt is refused with `403 DBSC_FRESH_PROOF_REQUIRED` and its bound cookie removed. The browser refreshes with its key, and the retry passes once. A copied cookie can't answer, however fresh it is.
 
+A navigation (`Sec-Fetch-Mode: navigate`), such as a link to `/oauth2/authorize` or a form post, gets `307` back to the same URL instead, because the browser would show a JSON 403 to the user. The browser holds the redirected request, refreshes with its key, and follows it. A `307` keeps a form post's method and body.
+
+An endpoint that another endpoint runs inside the same request is checked once. The OAuth provider's consent and continue endpoints re-enter `/oauth2/authorize` through the hook pipeline, so listing both `/oauth2/consent` and `/oauth2/authorize` asks for one proof, not two.
+
 For your own routes, call the same check from server code:
 
 ```ts

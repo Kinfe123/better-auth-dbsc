@@ -1,3 +1,5 @@
+import type { BetterAuthPlugin } from "better-auth";
+import { createAuthEndpoint, dispatchAuthEndpoint, sessionMiddleware } from "better-auth/api";
 import { bearer, openAPI } from "better-auth/plugins";
 import { describe, expect, it } from "vitest";
 import packageJson from "../package.json" with { type: "json" };
@@ -598,6 +600,83 @@ describe("stepUp", () => {
     const { auth } = await createTestAuth();
     const response = await new Browser(auth).post("/dbsc/require-fresh-proof", { action: "x" });
     expect(response.status).toBe(404);
+  });
+
+  it("sends a navigation back to itself instead of answering it with JSON", async () => {
+    const { auth, clock } = await createTestAuth({
+      stepUp: { paths: ["/list-sessions", "/update-user"] },
+    });
+    const { browser, device } = await signUpAndBind(auth);
+    clock.advance(1);
+    const navigate = { "sec-fetch-mode": "navigate" };
+
+    const first = await browser.fetch("/list-sessions?from=menu", { headers: navigate });
+    expect(first.status).toBe(307);
+    expect(first.headers.get("location")).toBe("/api/auth/list-sessions?from=menu");
+    expect(browser.cookies.has(BOUND_COOKIE)).toBe(false);
+    expect(browser.cookies.get(STEP_UP_COOKIE)).toBeTypeOf("string");
+
+    // Chrome holds the redirected request, refreshes with its key, then follows it.
+    clock.advance(1);
+    await refreshLikeChrome(browser, device);
+    const followed = await browser.fetch("/list-sessions?from=menu", { headers: navigate });
+    expect(followed.status).toBe(200);
+
+    // A fetch from a page still gets the JSON refusal it can act on.
+    clock.advance(1);
+    const fetched = await browser.post("/update-user", { name: "x" });
+    expect(fetched.status).toBe(403);
+    expect((await fetched.json()).code).toBe("DBSC_FRESH_PROOF_REQUIRED");
+
+    // A form post keeps its method and body through a 307.
+    const { browser: other } = await signUpAndBind(auth);
+    clock.advance(1);
+    const form = await other.fetch("/update-user", {
+      method: "POST",
+      headers: { ...navigate, origin: ORIGIN, "content-type": "application/json" },
+      body: JSON.stringify({ name: "From A Form" }),
+    });
+    expect(form.status).toBe(307);
+    expect(form.headers.get("location")).toBe("/api/auth/update-user");
+  });
+
+  it("does not challenge an endpoint that an answered one runs inside its own request", async () => {
+    // The OAuth provider's consent and continue endpoints re-enter `/oauth2/authorize`
+    // through the hook pipeline with the same request. This plugin does the same.
+    const inner = createAuthEndpoint(
+      "/inner",
+      { method: "POST", use: [sessionMiddleware] },
+      (ctx) => ctx.json({ inner: true }),
+    );
+    const outer = createAuthEndpoint(
+      "/outer",
+      { method: "POST", use: [sessionMiddleware] },
+      async (ctx) =>
+        dispatchAuthEndpoint(inner, {
+          ...ctx,
+          asResponse: false,
+          returnHeaders: false,
+          returnStatus: false,
+        } as never),
+    );
+    const nesting = { id: "nesting", endpoints: { inner, outer } } satisfies BetterAuthPlugin;
+    const { auth, clock } = await createTestAuth(
+      { stepUp: { paths: ["/outer", "/inner"] } },
+      { plugins: [nesting] },
+    );
+    const { browser, device } = await signUpAndBind(auth);
+    clock.advance(1);
+
+    expect((await browser.post("/outer", {})).status).toBe(403);
+    clock.advance(1);
+    await refreshLikeChrome(browser, device);
+    const answered = await browser.post("/outer", {});
+    expect(answered.status).toBe(200);
+    expect(await answered.json()).toEqual({ inner: true });
+
+    // Called on its own, the inner endpoint still needs its own proof.
+    clock.advance(1);
+    expect((await browser.post("/inner", {})).status).toBe(403);
   });
 });
 
