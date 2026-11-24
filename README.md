@@ -1,5 +1,3 @@
-<img src="assets/icon.svg" width="64" height="64" alt="">
-
 # better-auth-dbsc
 
 **Device Bound Session Credentials for Better Auth: a stolen session cookie stops working on any other machine.**
