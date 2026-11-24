@@ -1,4 +1,4 @@
-import type { BetterAuthPlugin, InferOptionSchema, Session, User } from "better-auth";
+import type { BetterAuthPlugin, InferOptionSchema, Session } from "better-auth";
 import { BASE_ERROR_CODES, BetterAuthError } from "better-auth";
 import { APIError, createAuthEndpoint, createAuthMiddleware } from "better-auth/api";
 import { mergeSchema } from "better-auth/db";
@@ -71,100 +71,45 @@ export type DbscRefusalReason =
   | "bound_to_other_key"
   | "disabled";
 
-/** Identifies a session in hook data. Hooks never receive keys, challenges, cookies, or tokens. */
-export interface DbscSessionRef {
-  sessionId: string;
-  userId: string;
-}
-
-/** Better Auth's endpoint context, as hooks receive it. */
-export type DbscHookContext = Parameters<Parameters<typeof createAuthMiddleware>[0]>[0];
-type HookContext = DbscHookContext;
-type AuthContext = HookContext["context"];
-type Awaitable<T> = T | Promise<T>;
-
 /**
- * Callbacks for the DBSC lifecycle, named like Better Auth's `organizationHooks`.
- *
- * `beforeRegistration` is awaited and can cancel. Every other hook runs through Better
- * Auth's background task handler when one is configured; a throw is logged and never
- * changes the response.
+ * One DBSC event, for `onEvent`. Events carry session and user ids and reason codes,
+ * never keys, challenges, cookies, or tokens.
  */
-export interface DbscHooks {
+export type DbscEvent =
+  | { type: "registered"; sessionId: string; userId: string }
+  | { type: "registration_refused"; sessionId: string; userId: string; reason: DbscRefusalReason }
+  | { type: "refreshed"; sessionId: string; userId: string }
+  | {
+      type: "refresh_challenged";
+      sessionId: string;
+      userId: string;
+      reason: "missing_proof" | "stale_challenge" | "replayed";
+    }
   /**
-   * Before a new session is offered DBSC. Return `false` to skip this session. Runs only
-   * when a response issues a session token the request did not carry, so session
-   * refreshes never re-register.
+   * A refresh for a bound session carried a proof the bound key did not sign: the
+   * strongest theft signal. The binding is untouched; revoke the session here if you
+   * would rather sign the owner out than let a thief keep trying.
    */
-  beforeRegistration?: (
-    data: { session: Session; user: User },
-    ctx: DbscHookContext,
-  ) => Awaitable<boolean | void>;
-  /** A session was bound to a device key. */
-  afterRegistration?: (data: DbscSessionRef) => Awaitable<void>;
-  /** A registration was refused. */
-  onRegistrationRefused?: (data: DbscSessionRef & { reason: DbscRefusalReason }) => Awaitable<void>;
-  /** A bound cookie was renewed with the device key. */
-  afterRefresh?: (data: DbscSessionRef) => Awaitable<void>;
-  /** A refresh was answered with a new challenge. `missing_proof` is the normal first step. */
-  onRefreshChallenged?: (
-    data: DbscSessionRef & { reason: "missing_proof" | "stale_challenge" | "replayed" },
-  ) => Awaitable<void>;
-  /**
-   * A refresh carried a proof the bound key did not sign: the strongest theft signal. The
-   * binding is untouched; revoke the session here if you would rather sign the owner out
-   * than let a thief keep trying.
-   */
-  onProofRejected?: (data: DbscSessionRef & { reason: string }) => Awaitable<void>;
+  | { type: "proof_rejected"; sessionId: string; userId: string; reason: string }
   /**
    * A bound session arrived without a live bound cookie and was treated as signed out.
    * Expected now and then from a real browser; a burst of them is a copied cookie.
    */
-  onCredentialMissing?: (data: DbscSessionRef & { via: "cookie" | "bearer" }) => Awaitable<void>;
-  /** A `freshProof` path asked the browser for a new proof. */
-  onFreshProofChallenged?: (data: DbscSessionRef & { action: string }) => Awaitable<void>;
-  /** A `freshProof` path was answered by a proof made after its challenge. */
-  afterFreshProof?: (data: DbscSessionRef & { action: string }) => Awaitable<void>;
-  /** A session that is not bound was refused on a `freshProof` path. */
-  onUnboundRefused?: (
-    data: DbscSessionRef & { action: string; policy: DbscUnboundPolicy },
-  ) => Awaitable<void>;
-  /** The browser was told to end its DBSC session. */
-  onTerminate?: (data: {
-    reason: "disabled" | "no_session" | "not_bound" | "other_identifier";
-  }) => Awaitable<void>;
-}
+  | { type: "credential_missing"; sessionId: string; userId: string; via: "cookie" | "bearer" }
+  | { type: "fresh_proof_challenged"; sessionId: string; userId: string; action: string }
+  | { type: "fresh_proof_answered"; sessionId: string; userId: string; action: string }
+  | {
+      type: "unbound_refused";
+      sessionId: string;
+      userId: string;
+      action: string;
+      policy: DbscUnboundPolicy;
+    }
+  | { type: "terminated"; reason: "disabled" | "no_session" | "not_bound" | "other_identifier" };
 
-/** Internal: one signal, dispatched to its hook. */
-type DbscSignal =
-  | ({ hook: "afterRegistration" } & Parameters<NonNullable<DbscHooks["afterRegistration"]>>[0])
-  | ({ hook: "onRegistrationRefused" } & Parameters<
-      NonNullable<DbscHooks["onRegistrationRefused"]>
-    >[0])
-  | ({ hook: "afterRefresh" } & Parameters<NonNullable<DbscHooks["afterRefresh"]>>[0])
-  | ({ hook: "onRefreshChallenged" } & Parameters<NonNullable<DbscHooks["onRefreshChallenged"]>>[0])
-  | ({ hook: "onProofRejected" } & Parameters<NonNullable<DbscHooks["onProofRejected"]>>[0])
-  | ({ hook: "onCredentialMissing" } & Parameters<NonNullable<DbscHooks["onCredentialMissing"]>>[0])
-  | ({ hook: "onFreshProofChallenged" } & Parameters<
-      NonNullable<DbscHooks["onFreshProofChallenged"]>
-    >[0])
-  | ({ hook: "afterFreshProof" } & Parameters<NonNullable<DbscHooks["afterFreshProof"]>>[0])
-  | ({ hook: "onUnboundRefused" } & Parameters<NonNullable<DbscHooks["onUnboundRefused"]>>[0])
-  | ({ hook: "onTerminate" } & Parameters<NonNullable<DbscHooks["onTerminate"]>>[0]);
-
-const HOOK_NAMES = [
-  "beforeRegistration",
-  "afterRegistration",
-  "onRegistrationRefused",
-  "afterRefresh",
-  "onRefreshChallenged",
-  "onProofRejected",
-  "onCredentialMissing",
-  "onFreshProofChallenged",
-  "afterFreshProof",
-  "onUnboundRefused",
-  "onTerminate",
-] as const satisfies (keyof DbscHooks)[];
+type HookContext = Parameters<Parameters<typeof createAuthMiddleware>[0]>[0];
+type AuthContext = HookContext["context"];
+type Awaitable<T> = T | Promise<T>;
 
 export interface DbscOptions {
   /**
@@ -261,8 +206,19 @@ export interface DbscOptions {
     /** @default 600 */
     max?: number;
   };
-  /** Callbacks for registrations, refreshes, refusals, and theft signals. */
-  dbscHooks?: DbscHooks;
+  /**
+   * Called for registrations, refreshes, refusals, and theft signals, like the Stripe
+   * plugin's `onEvent`. Runs through Better Auth's background task handler when one is
+   * configured; a throw is logged and never changes the response.
+   */
+  onEvent?: (event: DbscEvent) => Awaitable<void>;
+  /**
+   * Decide whether a new session is offered DBSC. Runs only when a response issues a
+   * session token the request did not carry; session refreshes never re-register.
+   */
+  shouldRegister?: (ctx: HookContext) => Awaitable<boolean>;
+  /** The clock, in milliseconds. For tests. */
+  now?: () => number;
   /**
    * Where bindings live. Defaults to a `dbscSession` table through Better Auth's adapter.
    * Pass a store, or a function that builds one from Better Auth's context.
@@ -310,7 +266,9 @@ export interface ResolvedDbscOptions {
   enforcement: { enabled: boolean; exclude: string[] };
   freshProof: { paths: Map<string, DbscUnboundPolicy>; expiresIn: number };
   rateLimit: { enabled: boolean; window: number; max: number };
-  dbscHooks: DbscHooks;
+  onEvent: DbscOptions["onEvent"];
+  shouldRegister: DbscOptions["shouldRegister"];
+  now: () => number;
   store: ((context: AuthContext) => DbscStore) | undefined;
   advanced: {
     sessionIdentifier: string;
@@ -380,12 +338,9 @@ export function resolveDbscOptions(options: DbscOptions = {}): ResolvedDbscOptio
   };
   positiveInteger(rateLimit.window, "rateLimit.window");
   positiveInteger(rateLimit.max, "rateLimit.max");
-  const dbscHooks = options.dbscHooks ?? {};
-  for (const [name, hook] of Object.entries(dbscHooks)) {
-    if (!(HOOK_NAMES as readonly string[]).includes(name)) {
-      issues.push(`\`dbscHooks.${name}\` is not a hook. Hooks: ${HOOK_NAMES.join(", ")}.`);
-    } else if (hook !== undefined && typeof hook !== "function") {
-      issues.push(`\`dbscHooks.${name}\` must be a function.`);
+  for (const key of ["onEvent", "shouldRegister", "now"] as const) {
+    if (options[key] !== undefined && typeof options[key] !== "function") {
+      issues.push(`\`${key}\` must be a function.`);
     }
   }
   const sessionIdentifier = options.advanced?.sessionIdentifier ?? "better-auth";
@@ -415,7 +370,9 @@ export function resolveDbscOptions(options: DbscOptions = {}): ResolvedDbscOptio
     enforcement: { enabled: options.enforcement?.enabled ?? true, exclude: enforcementExclude },
     freshProof: { paths: new Map(freshProofEntries), expiresIn: freshProofExpiresIn },
     rateLimit,
-    dbscHooks,
+    onEvent: options.onEvent,
+    shouldRegister: options.shouldRegister,
+    now: options.now ?? Date.now,
     store: store === undefined ? undefined : typeof store === "function" ? store : () => store,
     advanced: {
       sessionIdentifier,
@@ -492,11 +449,11 @@ const sessionConfigResponse = {
 export const dbsc = <O extends DbscOptions>(options?: O) => {
   const config = resolveDbscOptions(options);
 
-  /** Hooks never change a response: a throwing hook is logged, not rethrown. */
-  async function emit(ctx: HookContext, { hook, ...data }: DbscSignal) {
-    const handler = config.dbscHooks[hook] as ((data: object) => Awaitable<void>) | undefined;
+  /** Telemetry never changes a response: a throwing handler is logged, not rethrown. */
+  async function emit(ctx: HookContext, event: DbscEvent) {
+    const handler = config.onEvent;
     if (!handler) return;
-    await ctx.context.runInBackgroundOrAwait(Promise.resolve().then(() => handler(data)));
+    await ctx.context.runInBackgroundOrAwait(Promise.resolve().then(() => handler(event)));
   }
 
   /**
@@ -516,7 +473,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
     const token = cookieToken ?? readBearerToken(ctx.headers);
     if (!token) return { kind: "none" };
     const found = await ctx.context.internalAdapter.findSession(token);
-    if (!found || new Date(found.session.expiresAt).getTime() <= Date.now())
+    if (!found || new Date(found.session.expiresAt).getTime() <= config.now())
       return { kind: "none" };
     const binding = await storeFor(ctx.context).find(found.session.id);
     if (!binding) return { kind: "plain", token, session: found.session };
@@ -524,7 +481,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
       secret: ctx.context.secret,
       sessionToken: token,
       token: ctx.getCookie(cookies(ctx).bound.name),
-      nowMs: Date.now(),
+      nowMs: config.now(),
     });
     if (!bound)
       return { kind: "unproven", via: cookieToken ? "cookie" : "bearer", session: found.session };
@@ -553,7 +510,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
       sessionToken: state.token,
       action,
       token: ctx.getCookie(freshProof.name),
-      nowMs: Date.now(),
+      nowMs: config.now(),
       ttlSeconds: config.freshProof.expiresIn,
     });
     if (
@@ -562,18 +519,18 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
       (await storeFor(ctx.context).spend(state.session.id, "fresh-proof", challenge.issuedAtMs))
     ) {
       ctx.setCookie(freshProof.name, "", { ...freshProof.attributes, maxAge: 0 });
-      await emit(ctx, { hook: "afterFreshProof", ...ids(state.session), action });
+      await emit(ctx, { type: "fresh_proof_answered", ...ids(state.session), action });
       return "answered";
     }
     const next = await createFreshProofToken({
       secret: ctx.context.secret,
       sessionToken: state.token,
       action,
-      nowMs: Date.now(),
+      nowMs: config.now(),
     });
     ctx.setCookie(bound.name, "", { ...bound.attributes, maxAge: 0 });
     ctx.setCookie(freshProof.name, next, freshProof.attributes);
-    await emit(ctx, { hook: "onFreshProofChallenged", ...ids(state.session), action });
+    await emit(ctx, { type: "fresh_proof_challenged", ...ids(state.session), action });
     return "challenge";
   }
 
@@ -589,11 +546,11 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
       const freshAge = ctx.context.sessionConfig.freshAge;
       if (
         freshAge === 0 ||
-        Date.now() - new Date(state.session.createdAt).getTime() < freshAge * 1000
+        config.now() - new Date(state.session.createdAt).getTime() < freshAge * 1000
       )
         return;
     }
-    await emit(ctx, { hook: "onUnboundRefused", ...ids(state.session), action, policy });
+    await emit(ctx, { type: "unbound_refused", ...ids(state.session), action, policy });
     throw APIError.from(
       "FORBIDDEN",
       policy === "deny"
@@ -618,7 +575,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
     const value = await createBoundToken({
       secret: ctx.context.secret,
       sessionToken,
-      expiresAtMs: Date.now() + config.boundCookieMaxAge * 1000,
+      expiresAtMs: config.now() + config.boundCookieMaxAge * 1000,
       issuedAtMs,
     });
     // The value is a MAC over the session token already, so a plain cookie is enough.
@@ -630,7 +587,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
       secret: ctx.context.secret,
       purpose: "refresh",
       sessionToken,
-      nowMs: Date.now(),
+      nowMs: config.now(),
     });
     const value = formatChallengeHeader({
       challenge,
@@ -674,11 +631,11 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
 
   async function terminate(
     ctx: HookContext,
-    reason: Extract<DbscSignal, { hook: "onTerminate" }>["reason"],
+    reason: Extract<DbscEvent, { type: "terminated" }>["reason"],
   ) {
     const { bound } = cookies(ctx);
     ctx.setCookie(bound.name, "", { ...bound.attributes, maxAge: 0 });
-    await emit(ctx, { hook: "onTerminate", reason });
+    await emit(ctx, { type: "terminated", reason });
     return ctx.json(DBSC_TERMINATE);
   }
 
@@ -756,7 +713,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
           if (!proof) throw APIError.from("BAD_REQUEST", DBSC_ERROR_CODES.DBSC_PROOF_REQUIRED);
           const token = await readSessionToken(ctx);
           const found = token ? await ctx.context.internalAdapter.findSession(token) : null;
-          if (!token || !found || new Date(found.session.expiresAt).getTime() <= Date.now()) {
+          if (!token || !found || new Date(found.session.expiresAt).getTime() <= config.now()) {
             throw APIError.from("UNAUTHORIZED", DBSC_ERROR_CODES.DBSC_SESSION_REQUIRED);
           }
 
@@ -766,7 +723,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
             purpose: "register",
             sessionToken: token,
             challenge: jti,
-            nowMs: Date.now(),
+            nowMs: config.now(),
             ttlSeconds: config.challengeExpiresIn,
           });
           const refused = async (
@@ -774,7 +731,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
             error: (typeof DBSC_ERROR_CODES)[keyof typeof DBSC_ERROR_CODES],
             cause?: unknown,
           ) => {
-            await emit(ctx, { hook: "onRegistrationRefused", ...ids(found.session), reason });
+            await emit(ctx, { type: "registration_refused", ...ids(found.session), reason });
             // Set directly: Better Auth releases before `APIError.from` took a cause ignore
             // the third argument, and `peerDependencies` admits them.
             const refusal = APIError.from("BAD_REQUEST", error);
@@ -813,7 +770,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
           if (!bound) {
             throw await refused("bound_to_other_key", DBSC_ERROR_CODES.DBSC_BOUND_TO_OTHER_KEY);
           }
-          if (!existing) await emit(ctx, { hook: "afterRegistration", ...ids(session) });
+          if (!existing) await emit(ctx, { type: "registered", ...ids(session) });
 
           // The cookie dates from the challenge, not now: a replayed registration proof
           // then mints only a cookie older than any fresh-proof challenge that followed.
@@ -867,7 +824,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
 
           const token = await readSessionToken(ctx);
           const found = token ? await ctx.context.internalAdapter.findSession(token) : null;
-          if (!token || !found || new Date(found.session.expiresAt).getTime() <= Date.now()) {
+          if (!token || !found || new Date(found.session.expiresAt).getTime() <= config.now()) {
             return terminate(ctx, "no_session");
           }
           const store = storeFor(ctx.context);
@@ -875,7 +832,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
           if (!binding) return terminate(ctx, "not_bound");
 
           const askAgain = async (reason: "missing_proof" | "stale_challenge" | "replayed") => {
-            await emit(ctx, { hook: "onRefreshChallenged", ...ids(found.session), reason });
+            await emit(ctx, { type: "refresh_challenged", ...ids(found.session), reason });
             await setRefreshChallenge(ctx, token);
             throw APIError.from("FORBIDDEN", DBSC_ERROR_CODES.DBSC_CHALLENGE_REQUIRED);
           };
@@ -887,7 +844,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
             purpose: "refresh",
             sessionToken: token,
             challenge: jti,
-            nowMs: Date.now(),
+            nowMs: config.now(),
             ttlSeconds: config.challengeExpiresIn,
           });
           if (!jti || !challenge) return askAgain("stale_challenge");
@@ -902,7 +859,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
             // the challenge is not spent, so garbage cannot lock the owner out.
             const reason =
               error instanceof Error && "code" in error ? String(error.code) : "INVALID_PROOF";
-            await emit(ctx, { hook: "onProofRejected", ...ids(found.session), reason });
+            await emit(ctx, { type: "proof_rejected", ...ids(found.session), reason });
             await setRefreshChallenge(ctx, token);
             throw APIError.from("FORBIDDEN", DBSC_ERROR_CODES.DBSC_CHALLENGE_REQUIRED);
           }
@@ -910,8 +867,8 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
           if (!(await store.spend(found.session.id, "refresh", challenge.issuedAtMs)))
             return askAgain("replayed");
 
-          await emit(ctx, { hook: "afterRefresh", ...ids(found.session) });
-          await setBoundCookie(ctx, token, Date.now());
+          await emit(ctx, { type: "refreshed", ...ids(found.session) });
+          await setBoundCookie(ctx, token, config.now());
           await setRefreshChallenge(ctx, token);
           return ctx.json(sessionConfig(ctx));
         },
@@ -1023,7 +980,7 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
             const state = await sessionState(ctx);
             if (state.kind === "unproven") {
               await emit(ctx, {
-                hook: "onCredentialMissing",
+                type: "credential_missing",
                 ...ids(state.session),
                 via: state.via,
               });
@@ -1079,14 +1036,13 @@ export const dbsc = <O extends DbscOptions>(options?: O) => {
             // the request did not carry is a new session worth registering.
             if ((await readSessionToken(ctx)) === issued.session.token) return;
             if (!(await config.enabled())) return;
-            const { beforeRegistration } = config.dbscHooks;
-            if (beforeRegistration && (await beforeRegistration(issued, ctx)) === false) return;
+            if (config.shouldRegister && !(await config.shouldRegister(ctx))) return;
 
             const challenge = await createDbscChallenge({
               secret: ctx.context.secret,
               purpose: "register",
               sessionToken: issued.session.token,
-              nowMs: Date.now(),
+              nowMs: config.now(),
             });
             const value = formatRegistrationHeader({
               algorithms: config.algorithms,

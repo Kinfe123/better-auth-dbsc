@@ -94,7 +94,7 @@ To keep bindings somewhere else, such as Redis, KV, or an existing table, pass a
 Every option is optional. The shape follows Better Auth's own plugins:
 - **Optional features** are an object with `enabled`, like `session.cookieCache`.
 - **Durations** are `maxAge` or `expiresIn`, in seconds.
-- **Callbacks** are grouped in `dbscHooks`, like `organizationHooks`.
+- **Callbacks:** `onEvent` gets every DBSC event, like the Stripe plugin's `onEvent`, and `shouldRegister` decides which sessions are offered DBSC.
 - **Protocol details** live under `advanced`.
 
 These are the defaults:
@@ -109,7 +109,9 @@ dbsc({
   enforcement: { enabled: true, exclude: [] },
   freshProof: undefined, // { paths, unbound: "allow", expiresIn: 60 }
   rateLimit: { enabled: true, window: 60, max: 600 },
-  dbscHooks: {}, // beforeRegistration, afterRegistration, onProofRejected, ...
+  onEvent: undefined, // (event) => void
+  shouldRegister: undefined, // (ctx) => boolean
+  now: Date.now, // the clock, for tests
   store: undefined, // the dbscSession table through Better Auth's adapter
   schema: undefined, // rename the model or its fields
   advanced: {
@@ -125,7 +127,7 @@ Invalid options throw at startup with every problem listed at once:
 ```
 BetterAuthError: Invalid dbsc() options:
   - `boundCookieMaxAge` must be a positive integer.
-  - `dbscHooks.onEvent` is not a hook. Hooks: beforeRegistration, afterRegistration, ...
+  - `onEvent` must be a function.
 ```
 
 | Option | What it controls |
@@ -138,11 +140,13 @@ BetterAuthError: Invalid dbsc() options:
 | `scope.includeSite` | Cover every subdomain of the site. On `app.example.com` the browser first checks `https://example.com/.well-known/device-bound-sessions` for a `registering_origins` entry. Only turn this on if you serve that file. |
 | `scope.exclude` | Path prefixes the browser never holds for a refresh, such as `/assets/`. The DBSC endpoints are always excluded. |
 | `scope.rules` | Raw `scope_specification` entries, sent after `exclude`, for anything `exclude` can't express. |
-| `enforcement.enabled` | `true` drops the cookie of a bound session that has no live bound cookie. `false` binds sessions but never drops or refuses anything. That's how to roll this out: watch `dbscHooks`, then turn it on. |
+| `enforcement.enabled` | `true` drops the cookie of a bound session that has no live bound cookie. `false` binds sessions but never drops or refuses anything. That's how to roll this out: watch `onEvent`, then turn it on. |
 | `enforcement.exclude` | Paths left alone, such as `["/health/"]`. A trailing `/` matches child paths. |
 | `freshProof` | Paths that need a proof made after the request arrived. See [freshProof](#freshproof-sensitive-actions). |
 | `rateLimit` | Per-address limit on `/dbsc/register` and `/dbsc/refresh`, through Better Auth's own limiter, which is on in production by default. Set it generously, because an office shares one address. |
-| `dbscHooks` | Callbacks for the DBSC lifecycle. See [Hooks](#hooks). |
+| `onEvent` | Receives registrations, refreshes, refusals, and theft signals. See [Events](#events). |
+| `shouldRegister` | Decides per sign-in whether to offer DBSC, for example only for some users. It runs only when a response issues a session token the request didn't carry. Return `false` to skip. |
+| `now` | The clock in milliseconds, for tests. |
 | `store` | A `DbscStore`, or `(ctx) => DbscStore`, to keep bindings outside the default table. See [Store](#store). |
 | `schema` | Renames the `dbscSession` model or its fields. |
 | `advanced.sessionIdentifier` | The browser keys DBSC sessions by site and this value. One value per app means a new sign-in replaces the old DBSC session instead of adding another. Give apps that share a site different values. |
@@ -208,32 +212,31 @@ if (response.state === "challenge") {
 | `"no-session"` | Signed out, or a bound session without its cookie. |
 | `"off"` | `enabled` is false. |
 
-## Hooks
+## Events
 
 ```ts
 dbsc({
-  dbscHooks: {
-    beforeRegistration: ({ user }) => !user.email.endsWith("@bots.example.com"), // false skips
-    onProofRejected: ({ userId }) => revokeUserSessions(userId),
-    onCredentialMissing: ({ via }) => metrics.increment(`dbsc.credential_missing.${via}`),
+  onEvent(event) {
+    if (event.type === "proof_rejected") revokeUserSessions(event.userId);
+    metrics.increment(`dbsc.${event.type}`);
   },
+  shouldRegister: (ctx) => !ctx.context.newSession?.user.email.endsWith("@bots.example.com"),
 });
 ```
 
-| Hook | When |
+| `type` | When |
 |---|---|
-| `beforeRegistration({ session, user }, ctx)` | Before a new session is offered DBSC. Return `false` to skip it. It runs only when a response issues a session token the request didn't carry. |
-| `afterRegistration` | A session was bound. |
-| `onRegistrationRefused` | With a `reason`: `invalid_challenge`, `invalid_proof`, `bound_to_other_key`, or `disabled`. |
-| `afterRefresh` | A bound cookie was renewed. |
-| `onRefreshChallenged` | With a `reason`: `missing_proof` (normal), `stale_challenge`, or `replayed`. |
-| `onProofRejected` | A refresh carried a proof the bound key didn't sign. This is the strongest theft signal. The binding is untouched, so revoke the session here if you'd rather sign the owner out. |
-| `onCredentialMissing` | A bound session arrived without its cookie, `via` `cookie` or `bearer`. One now and then is normal. A burst means a copied cookie. |
-| `onFreshProofChallenged`, `afterFreshProof` | The `freshProof` round trip, with the `action`. |
-| `onUnboundRefused` | A plain session was refused on a `freshProof` path, with the `policy`. |
-| `onTerminate` | The browser was told to end its DBSC session: `disabled`, `no_session`, `not_bound`, or `other_identifier`. |
+| `registered` | A session was bound. |
+| `registration_refused` | With a `reason`: `invalid_challenge`, `invalid_proof`, `bound_to_other_key`, or `disabled`. |
+| `refreshed` | A bound cookie was renewed. |
+| `refresh_challenged` | With a `reason`: `missing_proof` (normal), `stale_challenge`, or `replayed`. |
+| `proof_rejected` | A refresh carried a proof the bound key didn't sign. This is the strongest theft signal. The binding is untouched, so revoke the session here if you'd rather sign the owner out. |
+| `credential_missing` | A bound session arrived without its cookie, `via` `cookie` or `bearer`. One now and then is normal. A burst means a copied cookie. |
+| `fresh_proof_challenged`, `fresh_proof_answered` | The `freshProof` round trip, with the `action`. |
+| `unbound_refused` | A plain session was refused on a `freshProof` path, with the `policy`. |
+| `terminated` | The browser was told to end its DBSC session: `disabled`, `no_session`, `not_bound`, or `other_identifier`. |
 
-`beforeRegistration` is awaited, and it can cancel, like a `databaseHooks` `before` hook. Every other hook gets `{ sessionId, userId }` plus its reason, never keys, challenges, cookies, or tokens. Those hooks run through Better Auth's background task handler when one is configured. If one throws, the error is logged and the response doesn't change.
+Events carry session ids, user ids, and reason codes, never keys, challenges, or cookies. `onEvent` runs through Better Auth's background task handler when one is configured. If it throws, the error is logged and the response doesn't change.
 
 ## Endpoints
 
